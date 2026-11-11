@@ -1,19 +1,15 @@
 export type CpuArch = "x86_32" | "x86_64" | "arm64" | "riscv";
 
 export type PrivilegeLevel =
-  // x86 Rings
   | "Ring 3 (User)"
   | "Ring 0 (Kernel)"
-  // ARM64 Exception Levels
   | "EL0 (User)"
   | "EL1 (Kernel)"
   | "EL2 (Hypervisor)"
   | "EL3 (Secure Monitor / Firmware)"
-  // RISC-V Modes
   | "U-Mode (User)"
   | "S-Mode (Supervisor)"
   | "M-Mode (Machine)"
-  // Confidential Computing (TDX)
   | "TD Guest (VMX Non-Root Encrypted)"
   | "Intel SEAM (Secure Arbitration Mode)"
   | "Host VMM (Root Ring 0)";
@@ -46,17 +42,25 @@ export interface InstructionSpec {
   docsReference: string;
 }
 
-export interface PStateFlags {
+export interface MachineFlags {
   n: boolean;
   z: boolean;
   c: boolean;
   v: boolean;
+  if?: boolean;
 }
 
 export interface TraceEvent {
   stream: "stdout" | "stderr" | "kernel_log";
   text: string;
-  timestamp: number;
+  timestamp?: number;
+  step?: number;
+}
+
+export interface StackSlotItem {
+  address: bigint;
+  value: bigint;
+  label?: string;
 }
 
 export interface MachineState {
@@ -65,14 +69,14 @@ export interface MachineState {
   pc: bigint;
   privilege: PrivilegeLevel;
   registers: Record<string, bigint>;
-  flags: PStateFlags;
-  // Architecture-specific control/status registers
+  flags: MachineFlags;
   specialRegisters: Record<string, string | bigint>;
-  stack: Array<{ address: bigint; value: bigint; label?: string }>;
+  stack: StackSlotItem[];
   trace: TraceEvent[];
   isHalted: boolean;
   exitCode: number | null;
   history: string[];
   microStepsExecuted: MicroStep[];
   currentLineIndex: number;
+  stepCount: number;
 }

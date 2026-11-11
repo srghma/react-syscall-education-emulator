@@ -1,6 +1,10 @@
 import type { TraceEvent } from "@/types/emulator";
 
-export default function TerminalOutput({ trace }: { trace: TraceEvent[] }) {
+export default function TerminalOutput({
+  trace,
+}: {
+  trace: readonly TraceEvent[];
+}) {
   return (
     <div className="rounded-xl border border-zinc-900 bg-black text-zinc-100 p-4 font-mono text-xs shadow-lg space-y-2">
       <div className="flex items-center justify-between border-b border-zinc-800 pb-2 text-zinc-400 text-[11px]">
@@ -23,12 +27,13 @@ export default function TerminalOutput({ trace }: { trace: TraceEvent[] }) {
             <div
               // biome-ignore lint/suspicious/noArrayIndexKey: log trace is append-only
               key={idx}
-              className={`leading-relaxed ${item.stream === "stdout"
+              className={`leading-relaxed ${
+                item.stream === "stdout"
                   ? "text-emerald-400"
                   : item.stream === "stderr"
                     ? "text-red-400"
                     : "text-amber-300"
-                }`}
+              }`}
             >
               {item.text}
             </div>

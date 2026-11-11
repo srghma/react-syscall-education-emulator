@@ -12,7 +12,7 @@ export default function StackView({ stack }: { stack: StackItem[] }) {
           Memory / Stack Frame View
         </h4>
         <span className="text-[10px] font-mono text-zinc-500">
-          TSS / Hardware Stack
+          TSS / Hardware Stack ({stack.length} slots)
         </span>
       </div>
 
@@ -22,9 +22,10 @@ export default function StackView({ stack }: { stack: StackItem[] }) {
         </div>
       ) : (
         <div className="space-y-1.5 font-mono text-xs">
-          {stack.map((item) => (
+          {stack.map((item, idx) => (
             <div
-              key={item.address}
+              // biome-ignore lint/suspicious/noArrayIndexKey: composite key prevents collisions when multiple trap frames share memory addresses
+              key={`${item.address.toString(16)}-${idx}`}
               className="flex items-center justify-between p-2 rounded bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800 text-[11px]"
             >
               <div className="flex items-center gap-2">
@@ -36,7 +37,7 @@ export default function StackView({ stack }: { stack: StackItem[] }) {
                 </span>
               </div>
               {item.label && (
-                <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-sans">
+                <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-sans font-medium">
                   {item.label}
                 </span>
               )}

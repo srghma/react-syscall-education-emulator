@@ -7,6 +7,7 @@ import { INSTRUCTIONS_DATA } from "@/lib/instruction-data";
 export default function InstructionTable() {
   const [archFilter, setArchFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
 
   const filtered = INSTRUCTIONS_DATA.filter((item) => {
     const matchesArch = archFilter === "all" || item.arch === archFilter;
@@ -18,6 +19,16 @@ export default function InstructionTable() {
       item.targetPrivilege.toLowerCase().includes(search.toLowerCase());
     return matchesArch && matchesSearch;
   });
+
+  // Chronological sort based on specification introduction year
+  const sorted = [...filtered].sort((a, b) => {
+    const diff = a.yearIntroduced - b.yearIntroduced;
+    return sortOrder === "asc" ? diff : -diff;
+  });
+
+  const toggleSortOrder = () => {
+    setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
+  };
 
   return (
     <div className="w-full space-y-4">
@@ -34,10 +45,11 @@ export default function InstructionTable() {
               type="button"
               key={tab.value}
               onClick={() => setArchFilter(tab.value)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${archFilter === tab.value
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
+                archFilter === tab.value
                   ? "bg-emerald-600 text-white shadow-sm"
                   : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
-                }`}
+              }`}
             >
               {tab.label}
             </button>
@@ -59,7 +71,18 @@ export default function InstructionTable() {
             <tr>
               <th className="py-3.5 px-4">Instruction</th>
               <th className="py-3.5 px-4">Architecture / CPU</th>
-              <th className="py-3.5 px-4">Year (Spec / Silicon)</th>
+              <th className="py-3.5 px-4">
+                <button
+                  type="button"
+                  onClick={toggleSortOrder}
+                  className="flex items-center gap-1.5 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors uppercase font-semibold"
+                >
+                  <span>Year (Spec / Silicon)</span>
+                  <span className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                    {sortOrder === "asc" ? "▲ Oldest" : "▼ Newest"}
+                  </span>
+                </button>
+              </th>
               <th className="py-3.5 px-4">Transition Boundary</th>
               <th className="py-3.5 px-4">Hardware Mechanism</th>
               <th className="py-3.5 px-4">Return Op</th>
@@ -67,7 +90,7 @@ export default function InstructionTable() {
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800 font-mono">
-            {filtered.map((item) => (
+            {sorted.map((item) => (
               <tr
                 key={item.id}
                 className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40 transition-colors"

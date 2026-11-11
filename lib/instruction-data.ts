@@ -1,92 +1,93 @@
 import type { InstructionSpec } from "@/types/emulator";
+import { parseAssembly, type Program } from "@/lib/lean/assembler";
 
 export const INSTRUCTIONS_DATA: InstructionSpec[] = [
+  // 1. 1978 / 1985: Early x86 Software Interrupt Gates
   {
     id: "int-0x80",
     mnemonic: "int 0x80",
     fullName: "Software Interrupt Vector 0x80",
     arch: "x86_32",
     archDisplay: "x86 (32-bit / IA-32)",
-    yearIntroduced: 1985,
+    yearIntroduced: 1978,
     yearSiliconShipped: 1985,
-    era: "Intel 80386 / Early Unix/Linux Era",
-    assemblerType: "GNU Assembler (.intel_syntax noprefix) / NASM",
+    era: "Intel 80386 Protected Mode / Classic Linux",
+    assemblerType: "GNU Assembler (.intel_syntax noprefix)",
     sourcePrivilege: "Ring 3 (User)",
     targetPrivilege: "Ring 0 (Kernel)",
     hardwareMechanism:
-      "Interrupt Descriptor Table (IDT entry 128 / 0x80) via TSS ESP0 kernel stack",
+      "Interrupt Descriptor Table (IDT gate 0x80) via TSS.ESP0 kernel stack",
     returnInstruction: "iret",
     keyRegisters: [
       "EAX (syscall nr)",
       "EBX, ECX, EDX, ESI, EDI (args)",
-      "ESP, SS (saved on kernel stack)",
+      "ESP, SS",
     ],
     summary:
-      "The classic 32-bit Linux system call mechanism. Triggers a slow hardware trap looking up gate 0x80 in the IDT, pushes 5 user registers onto the TSS-referenced kernel stack, and switches from Ring 3 to Ring 0.",
-    docsReference:
-      "Intel 64 and IA-32 Architectures Software Developer's Manual, Vol 3A, Section 6.12",
+      "Legacy 32-bit Linux syscall interface. Traps through IDT gate 0x80, switches to the TSS Ring 0 stack, and pushes SS, ESP, EFLAGS, CS, and return EIP.",
+    docsReference: "Intel SDM Vol 3A, Section 6.12",
     hardwareSteps: [
       {
         stepNumber: 1,
-        description: "Vector Lookup",
-        hardwareAction:
-          "Reads index 0x80 from the Interrupt Descriptor Table (IDTR.base + 0x80 * 8).",
+        description: "Gate Lookup",
+        hardwareAction: "Reads gate descriptor at IDTR.base + 0x80 * 8.",
         affectedComponents: ["IDTR", "IDT[0x80]"],
       },
       {
         stepNumber: 2,
         description: "Stack Switch",
-        hardwareAction:
-          "Reads Ring 0 ESP and SS from Task State Segment (TSS.ESP0) and switches hardware stack.",
-        affectedComponents: ["SS", "ESP", "TSS"],
+        hardwareAction: "Loads Ring 0 ESP and SS from TSS.ESP0.",
+        affectedComponents: ["TSS.ESP0", "SS", "ESP"],
       },
       {
         stepNumber: 3,
-        description: "Save User Context",
+        description: "Context Push",
         hardwareAction:
-          "Pushes old SS, old ESP, EFLAGS, old CS, and return EIP onto Ring 0 stack.",
-        affectedComponents: ["Ring 0 Stack", "EFLAGS"],
+          "Pushes SS, ESP, EFLAGS, CS, and return EIP onto Ring 0 stack.",
+        affectedComponents: ["Ring 0 Stack"],
       },
       {
         stepNumber: 4,
-        description: "Privilege Transition",
-        hardwareAction:
-          "Sets CPL (Current Privilege Level) to 0 and clears IF (Interrupt Flag) in EFLAGS.",
+        description: "Privilege Elevation",
+        hardwareAction: "Switches CPL to 0; clears IF in EFLAGS.",
         affectedComponents: ["CS.DPL", "EFLAGS.IF"],
       },
-      {
-        stepNumber: 5,
-        description: "Kernel Branch",
-        hardwareAction:
-          "Loads EIP with the segment offset from the IDT gate entry point (system_call).",
-        affectedComponents: ["EIP"],
-      },
     ],
-    defaultProgram: `# int 0x80: Classic 32-bit Linux Syscall
+    defaultProgram: `# 32-bit Linux System Call with Real String Buffer
 .intel_syntax noprefix
+.section .data
+msg:
+    .asciz "Hello from 32-bit Linux int 0x80!\\n"
+    len = . - msg
+
 .section .text
 .global _start
 
 _start:
+    # sys_write(fd: 1, buf: msg, count: len)
     mov eax, 4          # sys_write (4)
     mov ebx, 1          # stdout (1)
-    mov edx, 14         # length: 14 bytes
-    int 0x80            # Trap to IDT gate 0x80 (Ring 3 -> Ring 0)
+    mov ecx, msg        # pointer to buffer in memory
+    mov edx, len        # byte count
+    int 0x80            # Hardware interrupt -> pushes SS, ESP, EFLAGS, CS, EIP to ESP0
 
+    # sys_exit(0)
     mov eax, 1          # sys_exit (1)
-    xor ebx, ebx        # exit code 0
-    int 0x80            # Terminate process
+    xor ebx, ebx        # status: 0
+    int 0x80
 `,
   },
+
+  // 2. 1997: Intel Fast System Call MSRs
   {
     id: "sysenter",
     mnemonic: "sysenter",
     fullName: "Fast System Call",
     arch: "x86_32",
-    archDisplay: "x86 (32-bit Pentium Pro Fastpath)",
-    yearIntroduced: 1995,
+    archDisplay: "x86 (Pentium II Fastpath)",
+    yearIntroduced: 1997,
     yearSiliconShipped: 1997,
-    era: "Intel P6 (Pentium Pro / Pentium II) Era",
+    era: "Intel P6 / Pentium II Era",
     assemblerType: "GNU Assembler (.intel_syntax noprefix)",
     sourcePrivilege: "Ring 3 (User)",
     targetPrivilege: "Ring 0 (Kernel)",
@@ -100,54 +101,55 @@ _start:
       "MSR 0x174..0x176",
     ],
     summary:
-      "Bypasses the high-overhead IDT lookup by jumping directly to MSR-cached addresses. Does not push return values to memory; user code must load user return EIP into EDX and user ESP into ECX.",
-    docsReference: "Intel SDM Vol 2B: SYSENTER - Fast System Call",
+      "Bypasses IDT lookups by jumping directly to cached kernel entry MSRs. Userland stages return EIP in EDX and user ESP in ECX for sysexit.",
+    docsReference: "Intel SDM Vol 2B: SYSENTER",
     hardwareSteps: [
       {
         stepNumber: 1,
-        description: "Verify MSR Setup",
-        hardwareAction: "Validates IA32_SYSENTER_CS (0x174) is non-zero.",
+        description: "Verify MSRs",
+        hardwareAction: "Checks IA32_SYSENTER_CS (0x174) is non-zero.",
         affectedComponents: ["MSR 0x174"],
       },
       {
         stepNumber: 2,
-        description: "Switch Code Segment",
+        description: "Switch CS/SS",
         hardwareAction:
-          "Sets CS = IA32_SYSENTER_CS, CPL = 0 (Ring 0 kernel mode).",
-        affectedComponents: ["CS", "CPL"],
+          "CS = MSR 0x174, SS = MSR 0x174 + 8, CPL switches to 0.",
+        affectedComponents: ["CS", "SS", "CPL"],
       },
       {
         stepNumber: 3,
-        description: "Load Kernel Stack",
-        hardwareAction:
-          "Sets SS = IA32_SYSENTER_CS + 8, ESP = IA32_SYSENTER_ESP (0x175).",
-        affectedComponents: ["SS", "ESP", "MSR 0x175"],
-      },
-      {
-        stepNumber: 4,
-        description: "Branch & Mask",
-        hardwareAction:
-          "Sets EIP = IA32_SYSENTER_EIP (0x176), clears VM and IF in EFLAGS.",
-        affectedComponents: ["EIP", "EFLAGS"],
+        description: "Load Stack & IP",
+        hardwareAction: "ESP = MSR 0x175, EIP = MSR 0x176, clears IF.",
+        affectedComponents: ["ESP", "EIP", "EFLAGS"],
       },
     ],
-    defaultProgram: `# sysenter: 32-bit Fast System Call
+    defaultProgram: `# sysenter: Intel PII Fast System Call with Real String Buffer
 .intel_syntax noprefix
+.section .data
+msg:
+    .asciz "Hello from sysenter fastpath!\\n"
+    len = . - msg
+
 .section .text
 .global _start
 
 _start:
-    mov eax, 4          # sys_write (4)
-    mov ebx, 1          # stdout (1)
-    mov edx, 0x00401050 # pass return address in EDX
-    mov ecx, esp        # pass user stack in ECX
-    sysenter            # Fast hardware leap to kernel via MSRs
+    # sys_write(fd: 1, buf: msg, count: len)
+    mov eax, 4          # sys_write
+    mov ebx, 1          # stdout
+    mov ecx, msg        # buffer pointer
+    mov edx, len        # byte count
+    sysenter            # Direct jump to kernel via MSRs 0x174..0x176
 
-    mov eax, 1          # sys_exit (1)
-    xor ebx, ebx        # status 0
+    # sys_exit(0)
+    mov eax, 1          # sys_exit
+    xor ebx, ebx        # status: 0
     sysenter
 `,
   },
+
+  // 3. 1999 / 2003: AMD64 Long Mode Standard
   {
     id: "syscall",
     mnemonic: "syscall",
@@ -156,12 +158,12 @@ _start:
     archDisplay: "x86_64 (AMD64 / Intel 64)",
     yearIntroduced: 1999,
     yearSiliconShipped: 2003,
-    era: "AMD K8 (Opteron/Athlon 64) Standard",
-    assemblerType: "GNU Assembler (.intel_syntax noprefix) / NASM / GAS",
+    era: "AMD64 / Long Mode Standard",
+    assemblerType: "GNU Assembler (.intel_syntax noprefix)",
     sourcePrivilege: "Ring 3 (User)",
     targetPrivilege: "Ring 0 (Kernel)",
     hardwareMechanism:
-      "MSRs: LSTAR (entry RIP), STAR (CS/SS selectors), FMASK (RFLAGS mask)",
+      "MSRs: IA32_LSTAR (entry RIP), IA32_STAR (selectors), IA32_FMASK (RFLAGS mask)",
     returnInstruction: "sysretq",
     keyRegisters: [
       "RAX (nr)",
@@ -170,55 +172,119 @@ _start:
       "R11 (saved RFLAGS)",
     ],
     summary:
-      "The definitive high-speed system call on modern 64-bit x86. Stores user RIP directly into RCX and RFLAGS into R11, masks flags via IA32_FMASK, and jumps instantly to IA32_LSTAR.",
+      "The definitive high-speed 64-bit system call instruction. Copies next RIP directly into RCX and RFLAGS into R11, masks flags via IA32_FMASK, and jumps to IA32_LSTAR.",
     docsReference:
-      "AMD64 Architecture Programmer's Manual Vol 3, Section 3.1.1 SYSCALL",
+      "AMD64 Architecture Programmer's Manual Vol 3, Section 3.1.1",
     hardwareSteps: [
       {
         stepNumber: 1,
-        description: "Save User IP & Flags",
-        hardwareAction:
-          "Copies next RIP into RCX and RFLAGS into R11 (zero-overhead hardware registers).",
+        description: "Save Context",
+        hardwareAction: "RCX <= next RIP; R11 <= RFLAGS.",
         affectedComponents: ["RCX", "R11"],
       },
       {
         stepNumber: 2,
         description: "Mask Flags",
-        hardwareAction:
-          "RFLAGS &= ~(IA32_FMASK), clearing IF (Interrupt Flag) and RF.",
-        affectedComponents: ["RFLAGS", "IA32_FMASK (0xC0000084)"],
+        hardwareAction: "RFLAGS &= ~(IA32_FMASK) (clears IF, TF, DF, AC).",
+        affectedComponents: ["RFLAGS", "IA32_FMASK"],
       },
       {
         stepNumber: 3,
-        description: "Switch Privileges",
-        hardwareAction:
-          "Loads CS and SS target selectors from IA32_STAR; switches CPL to 0.",
+        description: "Switch CPL",
+        hardwareAction: "Loads CS and SS from IA32_STAR; CPL <= 0.",
         affectedComponents: ["CS", "SS", "CPL"],
       },
       {
         stepNumber: 4,
-        description: "Direct Jump",
-        hardwareAction:
-          "Loads RIP from IA32_LSTAR (0xC0000082) without inspecting memory tables.",
+        description: "Vector Leap",
+        hardwareAction: "RIP <= IA32_LSTAR (0xffffffff81e00000).",
         affectedComponents: ["RIP", "IA32_LSTAR"],
       },
     ],
-    defaultProgram: `# syscall: 64-bit Fast Linux System Call
+    defaultProgram: `# 64-bit Linux System Call with Real String Buffer
 .intel_syntax noprefix
+.section .data
+msg:
+    .asciz "Hello from 64-bit Linux kernel!\\n"
+    len = . - msg
+
 .section .text
 .global _start
 
 _start:
-    mov rax, 1          # sys_write (Linux x86_64)
-    mov rdi, 1          # fd = 1 (stdout)
-    mov rdx, 19         # count = 19 bytes
+    # sys_write(fd: 1, buf: msg, count: len)
+    mov rax, 1          # sys_write (Linux x86_64 = 1)
+    mov rdi, 1          # stdout (1)
+    lea rsi, msg        # pointer to string buffer
+    mov rdx, len        # length in bytes
     syscall             # RCX <= RIP, R11 <= RFLAGS, RIP <= LSTAR
 
-    mov rax, 60         # sys_exit
+    # sys_exit(0)
+    mov rax, 60         # sys_exit (Linux x86_64 = 60)
     xor rdi, rdi        # status = 0
     syscall
 `,
   },
+
+  // 4. 2004 / 2005: ARM TrustZone Security Boundary
+  {
+    id: "smc",
+    mnemonic: "smc #0",
+    fullName: "Secure Monitor Call",
+    arch: "arm64",
+    archDisplay: "ARMv8-A TrustZone",
+    yearIntroduced: 2004,
+    yearSiliconShipped: 2005,
+    era: "ARM TrustZone Security Architecture",
+    assemblerType: "GNU Assembler AArch64",
+    sourcePrivilege: "EL1 (Kernel)",
+    targetPrivilege: "EL3 (Secure Monitor / Firmware)",
+    hardwareMechanism:
+      "Trap to EL3; switches to Secure World; ESR_EL3 = 0x5e000000 (EC=0x17)",
+    returnInstruction: "eret",
+    keyRegisters: [
+      "X0 (SMCCC Function ID)",
+      "X1-X6 (parameters)",
+      "ELR_EL3",
+      "ESR_EL3",
+    ],
+    summary:
+      "Traps from the Non-Secure OS into EL3 Secure Monitor / ARM Trusted Firmware (ATF).",
+    docsReference: "ARM DEN 0028C (SMCCC Specification)",
+    hardwareSteps: [
+      {
+        stepNumber: 1,
+        description: "Save Context",
+        hardwareAction: "ELR_EL3 <= next PC; SPSR_EL3 <= PSTATE.",
+        affectedComponents: ["ELR_EL3", "SPSR_EL3"],
+      },
+      {
+        stepNumber: 2,
+        description: "Record Syndrome",
+        hardwareAction: "ESR_EL3 <= 0x5e000000 (EC=0x17 SMC, IL=1).",
+        affectedComponents: ["ESR_EL3"],
+      },
+      {
+        stepNumber: 3,
+        description: "World Transition",
+        hardwareAction: "SCR_EL3 updates; CPU switches to Secure World at EL3.",
+        affectedComponents: ["SCR_EL3", "PSTATE.EL"],
+      },
+    ],
+    defaultProgram: `// smc: ARM TrustZone Monitor Call (EL1 -> EL3)
+.global _start
+
+_start:
+    mov x0, 0x80000000  // SMCCC_VERSION query (Arm Architecture Range)
+    smc #0              // Trap to EL3 / ATF
+
+    mov x8, 93
+    mov x0, 0
+    svc #0
+`,
+  },
+
+  // 5. 2011 / 2013: ARMv8-A 64-bit OS Traps (EL0 -> EL1)
   {
     id: "svc",
     mnemonic: "svc #0",
@@ -226,24 +292,23 @@ _start:
     arch: "arm64",
     archDisplay: "ARMv8-A / ARMv9-A (AArch64)",
     yearIntroduced: 2011,
-    yearSiliconShipped: 2012,
-    era: "ARMv8-A 64-bit Architecture Announcement",
-    assemblerType: "GNU Assembler (.syntax unified / AArch64)",
+    yearSiliconShipped: 2013,
+    era: "ARMv8-A 64-bit Architecture",
+    assemblerType: "GNU Assembler (.syntax unified)",
     sourcePrivilege: "EL0 (User)",
     targetPrivilege: "EL1 (Kernel)",
     hardwareMechanism:
       "Synchronous Exception to EL1; saves PC into ELR_EL1, PSTATE into SPSR_EL1, updates ESR_EL1",
     returnInstruction: "eret",
     keyRegisters: [
-      "X8 (syscall nr)",
-      "X0-X5 (arguments & return)",
+      "X8 (nr)",
+      "X0-X5 (args)",
       "ELR_EL1 (return PC)",
       "ESR_EL1 (syndrome)",
     ],
     summary:
-      "Generates a synchronous exception forcing an execution transition from Exception Level 0 (EL0 user) to Exception Level 1 (EL1 kernel). In accordance with the ARM ARM (DDI 0487), ESR_EL1 captures syndrome EC=0x15.",
-    docsReference:
-      "ARM Architecture Reference Manual ARMv8 (DDI 0487), Section C6.2.316 SVC",
+      "Triggers a synchronous exception from EL0 to EL1. Populates ESR_EL1 with EC=0x15 (SVC) and IL=1 (0x56000000).",
+    docsReference: "ARM Architecture Reference Manual ARMv8 (DDI 0487)",
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -254,171 +319,106 @@ _start:
       {
         stepNumber: 2,
         description: "Record Syndrome",
-        hardwareAction:
-          "ESR_EL1 <= (EC: 0x15 for SVC in A64, IL: 1, ISS: imm16).",
+        hardwareAction: "ESR_EL1 <= 0x56000000 (EC=0x15 SVC, IL=1, ISS=0).",
         affectedComponents: ["ESR_EL1"],
       },
       {
         stepNumber: 3,
-        description: "Transition EL",
-        hardwareAction:
-          "Switches current Exception Level to EL1; selects SP_EL1.",
+        description: "Elevation",
+        hardwareAction: "Current Exception Level becomes EL1; selects SP_EL1.",
         affectedComponents: ["PSTATE.EL", "SP"],
       },
       {
         stepNumber: 4,
-        description: "Vector Table Offset",
-        hardwareAction:
-          "Branches to VBAR_EL1 + 0x400 (Synchronous from lower EL using AArch64).",
+        description: "Branch",
+        hardwareAction: "Branches to VBAR_EL1 + 0x400.",
         affectedComponents: ["PC", "VBAR_EL1"],
       },
     ],
-    defaultProgram: `// svc: ARM64 Supervisor Call
-.syntax unified
+    defaultProgram: `// ARM64 Linux System Call with Real String Buffer
+.section .data
+msg:
+    .asciz "Hello from ARM64 AArch64 Linux!\\n"
+    len = . - msg
+
+.section .text
 .global _start
 
 _start:
-    mov x8, 64          // sys_write (ARM64 Linux)
+    // sys_write(fd: 1, buf: msg, count: len)
+    mov x8, 64          // sys_write (ARM64 Linux = 64)
     mov x0, 1           // fd = 1 (stdout)
-    mov x2, 18          // length
-    svc #0              // Transition EL0 -> EL1, ESR_EL1.EC = 0x15
+    adr x1, msg         // load address of string into x1
+    mov x2, len         // length from symbol
+    svc #0              // Transition EL0 -> EL1; ESR_EL1.EC = 0x15
 
-    mov x8, 93          // sys_exit (ARM64 Linux)
+    // sys_exit(0)
+    mov x8, 93          // sys_exit (ARM64 Linux = 93)
     mov x0, 0           // exit status = 0
     svc #0
 `,
   },
+
+  // 6. 2011 / 2013: ARMv8-A Hardware Virtualization Traps (EL1 -> EL2)
   {
     id: "hvc",
     mnemonic: "hvc #0",
     fullName: "Hypervisor Call",
     arch: "arm64",
-    archDisplay: "ARMv8-A / ARMv9-A Virtualization",
+    archDisplay: "ARMv8-A Virtualization",
     yearIntroduced: 2011,
     yearSiliconShipped: 2013,
-    era: "ARMv8 Virtualization Extension (EL2)",
+    era: "ARMv8 EL2 Hypervisor Extension",
     assemblerType: "GNU Assembler AArch64",
     sourcePrivilege: "EL1 (Kernel)",
     targetPrivilege: "EL2 (Hypervisor)",
     hardwareMechanism:
-      "Trap to EL2; saves PC into ELR_EL2, PSTATE into SPSR_EL2, ESR_EL2.EC = 0x16",
+      "Trap to EL2; saves PC to ELR_EL2, PSTATE to SPSR_EL2, ESR_EL2 = 0x5a000000 (EC=0x16)",
     returnInstruction: "eret",
     keyRegisters: [
-      "X0 (Function ID / PSCI call)",
+      "X0 (PSCI Function ID)",
       "X1-X3 (args)",
       "ELR_EL2",
       "ESR_EL2",
     ],
     summary:
-      "Used by an operating system running at EL1 to invoke services provided by a Type-1 Hypervisor (KVM/Xen) at EL2, such as CPU power control (PSCI CPU_ON) or virtual device traps.",
-    docsReference:
-      "ARM DDI 0487: HVC instruction & PSCI specification (ARM DEN 0022D)",
+      "Enables guest kernels at EL1 to invoke EL2 hypervisor services such as CPU power control (PSCI).",
+    docsReference: "ARM DEN 0022D (PSCI Specification)",
     hardwareSteps: [
       {
         stepNumber: 1,
-        description: "Save Context to EL2",
+        description: "Save Context",
         hardwareAction: "ELR_EL2 <= next PC; SPSR_EL2 <= PSTATE.",
         affectedComponents: ["ELR_EL2", "SPSR_EL2"],
       },
       {
         stepNumber: 2,
         description: "Record Syndrome",
-        hardwareAction: "ESR_EL2 <= (EC: 0x16 for HVC in A64, ISS: imm16).",
+        hardwareAction: "ESR_EL2 <= 0x5a000000 (EC=0x16 HVC, IL=1).",
         affectedComponents: ["ESR_EL2"],
       },
       {
         stepNumber: 3,
-        description: "Elevate to Hypervisor",
-        hardwareAction: "PSTATE.EL switches from EL1 to EL2; selects SP_EL2.",
+        description: "Elevate EL",
+        hardwareAction: "PSTATE.EL switches to EL2; selects SP_EL2.",
         affectedComponents: ["PSTATE.EL", "SP_EL2"],
-      },
-      {
-        stepNumber: 4,
-        description: "Branch to VBAR_EL2",
-        hardwareAction: "Jumps to VBAR_EL2 + 0x400 exception vector offset.",
-        affectedComponents: ["PC", "VBAR_EL2"],
       },
     ],
     defaultProgram: `// hvc: Hypervisor Call (EL1 -> EL2)
 .global _start
 
 _start:
-    // PSCI CPU_ON call (0x84000003)
     mov x0, 0x84000003  // PSCI_0_2_FN_CPU_ON Function ID
-    mov x1, 1           // Target CPU Core ID = 1
-    mov x2, 0x80080000  // Entry point address for secondary core
-    hvc #0              // Trap to Hypervisor at EL2
+    mov x1, 1           // Core ID = 1
+    mov x2, 0x80080000  // Core entry point
+    hvc #0              // Trap to Hypervisor (EL2)
 
-    // Check return status in X0 (0 = PSCI_SUCCESS)
     mov x8, 93
     svc #0
 `,
   },
-  {
-    id: "smc",
-    mnemonic: "smc #0",
-    fullName: "Secure Monitor Call",
-    arch: "arm64",
-    archDisplay: "ARMv8-A / ARMv9-A TrustZone",
-    yearIntroduced: 2004,
-    yearSiliconShipped: 2005,
-    era: "ARM TrustZone (ARMv6KZ/v7, adapted to EL3 in ARMv8)",
-    assemblerType: "GNU Assembler AArch64",
-    sourcePrivilege: "EL1 (Kernel)",
-    targetPrivilege: "EL3 (Secure Monitor / Firmware)",
-    hardwareMechanism:
-      "Trap to EL3; switches from Normal World to Secure World / Root World; updates ESR_EL3.EC = 0x17",
-    returnInstruction: "eret",
-    keyRegisters: [
-      "X0 (SMC Function Identifier - SMCCC)",
-      "X1-X7 (parameters)",
-      "ELR_EL3",
-      "ESR_EL3",
-    ],
-    summary:
-      "Gates communication across the hardware TrustZone security boundary. Traps from the Non-Secure OS into EL3 Secure Monitor / ARM Trusted Firmware (ATF) for cryptographic attestation or OP-TEE services.",
-    docsReference: "SMC Calling Convention (SMCCC) PDD (ARM DEN 0028C)",
-    hardwareSteps: [
-      {
-        stepNumber: 1,
-        description: "Save Context to EL3",
-        hardwareAction: "ELR_EL3 <= next PC; SPSR_EL3 <= PSTATE.",
-        affectedComponents: ["ELR_EL3", "SPSR_EL3"],
-      },
-      {
-        stepNumber: 2,
-        description: "Record Syndrome",
-        hardwareAction: "ESR_EL3 <= (EC: 0x17 for SMC in A64).",
-        affectedComponents: ["ESR_EL3"],
-      },
-      {
-        stepNumber: 3,
-        description: "World Transition",
-        hardwareAction:
-          "Changes security state from Normal World to Secure World; activates EL3.",
-        affectedComponents: ["SCR_EL3", "PSTATE.EL"],
-      },
-      {
-        stepNumber: 4,
-        description: "Vector to EL3 Handler",
-        hardwareAction:
-          "Jumps to VBAR_EL3 + 0x400 (ATF Secure Monitor runtime service dispatcher).",
-        affectedComponents: ["PC", "VBAR_EL3"],
-      },
-    ],
-    defaultProgram: `// smc: ARM TrustZone Secure Monitor Call (EL1 -> EL3)
-.global _start
 
-_start:
-    // SMCCC Call: 0x82000000 = Get Trusted OS UID
-    mov x0, 0x82000000  // Fast Call, 32-bit, Standard Secure Service
-    smc #0              // Transition into Secure World (EL3)
-
-    // X0..X3 return the 128-bit UUID of the secure enclave
-    mov x8, 93
-    svc #0
-`,
-  },
+  // 7. 2014 / 2018: RISC-V Unified Environment Call
   {
     id: "ecall",
     mnemonic: "ecall",
@@ -426,30 +426,29 @@ _start:
     arch: "riscv",
     archDisplay: "RISC-V (RV32 / RV64)",
     yearIntroduced: 2014,
-    yearSiliconShipped: 2016,
-    era: "RISC-V Privileged Architecture Specification",
+    yearSiliconShipped: 2018,
+    era: "RISC-V Privileged Architecture",
     assemblerType: "GNU Assembler (riscv64-unknown-elf-as)",
     sourcePrivilege: "U-Mode (User)",
     targetPrivilege: "S-Mode (Supervisor)",
     hardwareMechanism:
-      "CSR update: saves PC to sepc/mepc, writes scause/mcause, updates sstatus/mstatus, jumps to stvec/mtvec",
+      "Hardware stores the ecall address itself into sepc, writes scause=8, jumps to stvec",
     returnInstruction: "sret / mret",
     keyRegisters: [
-      "a7 (syscall nr)",
+      "a7 (nr)",
       "a0-a5 (args)",
-      "sepc (saved PC)",
-      "scause (cause code 8 or 9)",
+      "sepc (holds ecall PC)",
+      "scause (cause code 8)",
     ],
     summary:
-      "A clean, unified transition instruction. Invoking ecall in U-mode traps to Supervisor mode (scause = 8). Invoking ecall in S-mode traps to Machine mode OpenSBI firmware (mcause = 9).",
+      "The unified RISC-V environment call. Trapping from U-mode writes the address of ecall itself into sepc and delegates to S-Mode.",
     docsReference:
-      "The RISC-V Instruction Set Manual, Volume II: Privileged Architecture, Section 3.1.10",
+      "The RISC-V Instruction Set Manual, Vol II: Privileged Architecture",
     hardwareSteps: [
       {
         stepNumber: 1,
         description: "Save Return PC",
-        hardwareAction:
-          "sepc <= current PC (the address of the ecall instruction itself).",
+        hardwareAction: "sepc <= address of ecall instruction itself.",
         affectedComponents: ["sepc"],
       },
       {
@@ -460,33 +459,42 @@ _start:
       },
       {
         stepNumber: 3,
-        description: "Save Privilege Stack",
-        hardwareAction:
-          "sstatus.SPP <= U-Mode, sstatus.SPIE <= sstatus.SIE, sstatus.SIE <= 0.",
+        description: "Privilege Shift",
+        hardwareAction: "sstatus.SPP <= U-Mode, sstatus.SPIE <= SIE, SIE <= 0.",
         affectedComponents: ["sstatus"],
       },
       {
         stepNumber: 4,
-        description: "Vector Jump",
-        hardwareAction: "PC <= stvec (Supervisor Trap Vector Base Address).",
+        description: "Vector Leap",
+        hardwareAction: "PC <= stvec (Supervisor Trap Vector).",
         affectedComponents: ["PC", "stvec"],
       },
     ],
-    defaultProgram: `# ecall: RISC-V Unified Environment Call
+    defaultProgram: `# RISC-V 64-bit System Call with Real String Buffer
+.section .data
+msg:
+    .asciz "Hello from RISC-V RV64GC kernel!\\n"
+    len = . - msg
+
 .section .text
 .globl _start
 
 _start:
+    # sys_write(fd: 1, buf: msg, count: len)
     li a7, 64           # Linux sys_write (64)
-    li a0, 1            # a0 = fd 1 (stdout)
-    li a2, 17           # a2 = length
-    ecall               # Traps from U-mode to S-mode (scause = 8)
+    li a0, 1            # fd = 1 (stdout)
+    la a1, msg          # load address of message
+    li a2, len          # length from equate symbol
+    ecall               # Trap to S-mode (scause = 8, sepc = PC)
 
+    # sys_exit(0)
     li a7, 93           # Linux sys_exit (93)
-    li a0, 0            # exit code 0
+    li a0, 0            # status = 0
     ecall
 `,
   },
+
+  // 8. 2020 / 2023: Intel TDX Confidential VM Call (Guest -> SEAM)
   {
     id: "tdcall",
     mnemonic: "tdcall",
@@ -495,50 +503,42 @@ _start:
     archDisplay: "Intel TDX (Trust Domain Extensions)",
     yearIntroduced: 2020,
     yearSiliconShipped: 2023,
-    era: "Intel 4th Gen Xeon (Sapphire Rapids) Confidential Computing",
-    assemblerType: "x86_64 GNU Assembler / GAS (.byte 0x66, 0x0f, 0x01, 0xcc)",
+    era: "Intel 4th Gen Xeon (Sapphire Rapids)",
+    assemblerType: "GNU Assembler (.intel_syntax noprefix)",
     sourcePrivilege: "TD Guest (VMX Non-Root Encrypted)",
     targetPrivilege: "Intel SEAM (Secure Arbitration Mode)",
     hardwareMechanism:
-      "Transitions into Intel SEAM firmware module; sanitizes registers before forwarding to host VMM",
+      "Transitions to authenticated Intel SEAM module; scrubs unshared registers before signaling host VMM",
     returnInstruction: "SEAMRET",
     keyRegisters: [
-      "RAX (Leaf: 0=TDG.VP.VMCALL, 1=RTMR.EXTEND)",
-      "RCX, RDX, R8-R11 (Shared VM params)",
-      "SEAM status in RAX",
+      "RAX (Leaf 0: TDG.VP.VMCALL)",
+      "RCX (GPR sharing bitmask)",
+      "R11 (sub-function)",
     ],
     summary:
-      "Executed inside an encrypted Confidential VM (Trust Domain). Bypasses untrusted host hypervisor tampering by routing first through Intel SEAM, scrubbing sensitive registers before signaling the host VMM via TDG.VP.VMCALL.",
-    docsReference:
-      "Intel Trust Domain Extensions (Intel TDX) Module Architecture Specification, Section 4.1",
+      "Executed inside a confidential VM. Leaves unshared registers sanitized before signaling the untrusted host VMM.",
+    docsReference: "Intel TDX Module Architecture Specification",
     hardwareSteps: [
       {
         stepNumber: 1,
-        description: "Validate SEAM Active",
+        description: "SEAM Check",
         hardwareAction:
-          "Hardware checks CPU SEAM mode is configured and SEAMRR range registers are locked.",
-        affectedComponents: ["SEAMRR", "CPU Control Registers"],
+          "Verifies CPU SEAM mode is configured and SEAMRR is locked.",
+        affectedComponents: ["SEAMRR"],
       },
       {
         stepNumber: 2,
-        description: "Trap to Intel SEAM",
+        description: "Trap to SEAM",
         hardwareAction:
-          "Transfers execution from Guest VMX Non-Root into authenticated Intel SEAM module code.",
+          "Transfers execution from Non-Root guest into Intel SEAM.",
         affectedComponents: ["SEAM Module", "RIP"],
       },
       {
         stepNumber: 3,
-        description: "Scrub Non-Shared State",
+        description: "Scrub Secrets",
         hardwareAction:
-          "SEAM zeroes out unshared registers to prevent host hypervisor data leakage.",
+          "Zeroes non-shared GPRs to prevent host hypervisor leakage.",
         affectedComponents: ["RBX", "RSI", "RDI", "R12..R15"],
-      },
-      {
-        stepNumber: 4,
-        description: "Conditional VM-Exit",
-        hardwareAction:
-          "If leaf is TDG.VP.VMCALL, SEAM causes a controlled VM-exit to the untrusted host VMM.",
-        affectedComponents: ["Host VMM", "VMCS"],
       },
     ],
     defaultProgram: `# tdcall: Intel TDX Confidential VM Call
@@ -547,17 +547,19 @@ _start:
 .global _start
 
 _start:
-    # Leaf 0 = TDG.VP.VMCALL (request service from host VMM)
-    mov rax, 0          # RAX = 0 (TDG.VP.VMCALL leaf)
-    mov rcx, 1          # Sub-service: 1 = Print / Output
-    mov rdx, 0x1000     # Shared memory GPA
-    tdcall              # Transition into SEAM; scrub registers
+    mov rax, 0          # Leaf 0: TDG.VP.VMCALL
+    mov rcx, 0x0C00     # Expose only R10 and R11
+    mov r11, 1          # Sub-function 1: Print/Logging
+    mov r12, 0x1000     # Shared parameter buffer
+    tdcall              # Trap to SEAM; sanitize guest state
 
-    # Check SEAM return status in RAX (0 = SUCCESS)
     mov rax, 60
+    xor rdi, rdi
     syscall
 `,
   },
+
+  // 9. 2020 / 2023: Intel TDX Hypervisor Call (Host -> SEAM)
   {
     id: "seamcall",
     mnemonic: "seamcall",
@@ -566,66 +568,49 @@ _start:
     archDisplay: "Intel TDX Host VMM",
     yearIntroduced: 2020,
     yearSiliconShipped: 2023,
-    era: "Intel 4th Gen Xeon (Sapphire Rapids) VMM Control",
-    assemblerType: "x86_64 GNU Assembler / GAS (.byte 0x66, 0x0f, 0x01, 0xcf)",
+    era: "Intel 4th Gen Xeon (Sapphire Rapids)",
+    assemblerType: "GNU Assembler (.intel_syntax noprefix)",
     sourcePrivilege: "Host VMM (Root Ring 0)",
     targetPrivilege: "Intel SEAM (Secure Arbitration Mode)",
     hardwareMechanism:
-      "Root VMX operation invocation of Intel SEAM module; enforces Secure EPT & KeyID allocation",
+      "Root VMX invocation of Intel SEAM module; enforces Secure EPT and KeyID allocation",
     returnInstruction: "SEAMRET",
     keyRegisters: [
-      "RAX (Leaf: TDH.MNG.INIT, TDH.MEM.PAGE.AUG, TDH.VP.ENTER)",
-      "RCX, RDX (TD Parameters)",
-      "RAX (Status)",
+      "RAX (Leaf 21: TDH.MNG.INIT)",
+      "RCX (TDR page address)",
+      "RDX (KeyID)",
     ],
     summary:
-      "Executed by the Host Hypervisor (KVM / Hyper-V) in Ring 0 to control the TDX module. Allows allocating hardware-encrypted pages and running guest Trust Domains without the hypervisor possessing decryption keys.",
-    docsReference:
-      "Intel TDX Module Base Architecture: SEAMCALL Instruction Specification",
+      "Executed by the host hypervisor in VMX root operation to manage trust domains.",
+    docsReference: "Intel TDX Module Base Architecture: SEAMCALL",
     hardwareSteps: [
       {
         stepNumber: 1,
-        description: "Validate VMX Root Mode",
+        description: "Verify Root Mode",
         hardwareAction:
-          "CPU ensures CPL == 0 and CR4.VMXE == 1 in VMX root operation.",
+          "CPU ensures CPL == 0 and CR4.VMXE == 1 in root operation.",
         affectedComponents: ["CR4.VMXE", "CPL"],
       },
       {
         stepNumber: 2,
-        description: "Enter SEAM Mode",
-        hardwareAction:
-          "CPU switches into Secure Arbitration Mode with SEAM identity-mapping.",
+        description: "Enter SEAM",
+        hardwareAction: "Switches to Secure Arbitration Mode.",
         affectedComponents: ["SEAM Mode", "RIP"],
       },
-      {
-        stepNumber: 3,
-        description: "Cryptographic Page Check",
-        hardwareAction:
-          "SEAM checks P-SEAMLDR physical page authentication and updates Secure EPT.",
-        affectedComponents: ["P-SEAMLDR", "Secure EPT", "KeyID Engine"],
-      },
-      {
-        stepNumber: 4,
-        description: "Return Status to VMM",
-        hardwareAction:
-          "SEAMRET returns status code in RAX (0x0 = TDX_SUCCESS) back to Host VMM.",
-        affectedComponents: ["RAX", "RIP"],
-      },
     ],
-    defaultProgram: `# seamcall: Host Hypervisor Managing Trust Domain
+    defaultProgram: `# seamcall: Host VMM Managing TDX Container
 .intel_syntax noprefix
 .section .text
 .global _start
 
 _start:
-    # Leaf 0x00000001 = TDH.MNG.INIT (Initialize TD Container)
-    mov rax, 0x00000001 # SEAM leaf
-    mov rcx, 0x7A000000 # TDR Physical Address (Target page)
-    mov rdx, 42         # Assigned Hardware KeyID
-    seamcall            # Enter SEAM, program cryptographic engine
+    mov rax, 21         # Leaf 21 (0x15): TDH.MNG.INIT
+    mov rcx, 0x7A000000 # TDR physical page address
+    mov rdx, 7          # Assigned Hardware KeyID
+    seamcall            # Enter SEAM; verify hardware crypto configuration
 
-    # Check RAX for TDX_SUCCESS (0)
-    mov rax, 60
+    mov rax, 60         # sys_exit
+    xor rdi, rdi        # status = 0
     syscall
 `,
   },
@@ -633,4 +618,23 @@ _start:
 
 export function getInstructionById(id: string): InstructionSpec | undefined {
   return INSTRUCTIONS_DATA.find((item) => item.id === id);
+}
+
+export const CODE_EXAMPLES: Record<string, string> = Object.fromEntries(
+  INSTRUCTIONS_DATA.map((item) => [item.id, item.defaultProgram]),
+);
+
+/**
+ * Pre-parse and validate all 9 default assembly programs at module load time.
+ */
+export const PREPARSED_PROGRAMS: Record<string, Program> = {};
+
+for (const item of INSTRUCTIONS_DATA) {
+  const result = parseAssembly(item.defaultProgram, item.arch);
+  if (result.tag === "error") {
+    throw new Error(
+      `[Startup Validation Failed] Error parsing default program for '${item.id}': ${result.error}`,
+    );
+  }
+  PREPARSED_PROGRAMS[item.id] = result.value;
 }
