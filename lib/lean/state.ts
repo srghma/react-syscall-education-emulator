@@ -1,5 +1,11 @@
 import { BitVec } from "./fp";
-import type { Arch, MicroOpStep, Privilege, TraceEvent } from "./domain";
+import type {
+  Arch,
+  MicroOpStep,
+  Privilege,
+  SpecialRegEntry,
+  TraceEvent,
+} from "./domain";
 import type { PureMemory } from "./memory";
 
 export interface StackSlot {
@@ -15,12 +21,26 @@ export interface MachineFlags {
   readonly V: boolean;
 }
 
-export class MachineState {
+export interface PendingReturn {
+  readonly returnOp:
+    | "sysretq"
+    | "sysexit"
+    | "iret"
+    | "eret"
+    | "sret"
+    | "seamret";
+  readonly returnPrivilege: Privilege;
+  readonly returnPc: BitVec<64>;
+  readonly popStackCount?: number;
+}
+
+export interface MachineState {
   readonly arch: Arch;
   readonly pc: BitVec<64>;
   readonly privilege: Privilege;
+  readonly callerPrivilege?: Privilege;
   readonly registers: ReadonlyMap<string, BitVec<64>>;
-  readonly specialRegisters: ReadonlyMap<string, string>;
+  readonly specialRegisters: ReadonlyMap<string, SpecialRegEntry>;
   readonly flags: MachineFlags;
   readonly memory: PureMemory;
   readonly stack: readonly StackSlot[];
@@ -28,185 +48,127 @@ export class MachineState {
   readonly microSteps: readonly MicroOpStep[];
   readonly isHalted: boolean;
   readonly exitCode: number | null;
+  readonly haltReason?: string;
   readonly stepCount: number;
   readonly activeLineIndex: number;
+  readonly kernelStackTop: bigint;
+  readonly pendingReturn?: PendingReturn;
+}
 
-  constructor(init: {
-    arch: Arch;
-    pc: BitVec<64>;
-    privilege: Privilege;
-    registers: ReadonlyMap<string, BitVec<64>>;
-    specialRegisters: ReadonlyMap<string, string>;
-    flags: MachineFlags;
-    memory: PureMemory;
-    stack: readonly StackSlot[];
-    trace: readonly TraceEvent[];
-    microSteps: readonly MicroOpStep[];
-    isHalted: boolean;
-    exitCode: number | null;
-    stepCount: number;
-    activeLineIndex: number;
-  }) {
-    this.arch = init.arch;
-    this.pc = init.pc;
-    this.privilege = init.privilege;
-    this.registers = init.registers;
-    this.specialRegisters = init.specialRegisters;
-    this.flags = init.flags;
-    this.memory = init.memory;
-    this.stack = init.stack;
-    this.trace = init.trace;
-    this.microSteps = init.microSteps;
-    this.isHalted = init.isHalted;
-    this.exitCode = init.exitCode;
-    this.stepCount = init.stepCount;
-    this.activeLineIndex = init.activeLineIndex;
+const X86_SUBREGISTERS: Record<
+  string,
+  { parent: string; width: 8 | 16 | 32; isHigh?: boolean }
+> = {
+  eax: { parent: "rax", width: 32 },
+  ebx: { parent: "rbx", width: 32 },
+  ecx: { parent: "rcx", width: 32 },
+  edx: { parent: "rdx", width: 32 },
+  esi: { parent: "rsi", width: 32 },
+  edi: { parent: "rdi", width: 32 },
+  ebp: { parent: "rbp", width: 32 },
+  esp: { parent: "rsp", width: 32 },
+  ax: { parent: "rax", width: 16 },
+  bx: { parent: "rbx", width: 16 },
+  cx: { parent: "rcx", width: 16 },
+  dx: { parent: "rdx", width: 16 },
+  al: { parent: "rax", width: 8 },
+  bl: { parent: "rbx", width: 8 },
+  cl: { parent: "rcx", width: 8 },
+  dl: { parent: "rdx", width: 8 },
+  ah: { parent: "rax", width: 8, isHigh: true },
+  bh: { parent: "rbx", width: 8, isHigh: true },
+  ch: { parent: "rcx", width: 8, isHigh: true },
+  dh: { parent: "rdx", width: 8, isHigh: true },
+};
+
+export function readGpr(s: MachineState, regName: string): BitVec<64> {
+  const r = regName.toLowerCase();
+
+  if (s.arch === "riscv" && (r === "zero" || r === "x0")) {
+    return BitVec.zero(64);
+  }
+  if (s.arch === "arm64" && (r === "xzr" || r === "wzr")) {
+    return BitVec.zero(64);
   }
 
-  // -------------------------------------------------------------------------
-  // Register Lenses (with Aliasing & Zero Registers)
-  // -------------------------------------------------------------------------
-
-  getReg(name: string): BitVec<64> {
-    const r = name.toLowerCase();
-
-    // RISC-V zero register is hardwired to 0
-    if (this.arch === "riscv" && (r === "zero" || r === "x0")) {
-      return BitVec.zero(64);
+  if (s.arch === "x86_64" && r in X86_SUBREGISTERS) {
+    const info = X86_SUBREGISTERS[r];
+    const parentVal = s.registers.get(info.parent)?.val ?? 0n;
+    if (info.isHigh) {
+      return BitVec.of(64, (parentVal >> 8n) & 0xffn);
     }
-    // ARM zero registers
-    if (this.arch === "arm64" && (r === "xzr" || r === "wzr")) {
-      return BitVec.zero(64);
+    return BitVec.of(64, BigInt.asUintN(info.width, parentVal));
+  }
+
+  if (s.arch === "arm64" && r.startsWith("w")) {
+    const parent = `x${r.slice(1)}`;
+    const parentVal = s.registers.get(parent)?.val ?? 0n;
+    return BitVec.of(64, BigInt.asUintN(32, parentVal));
+  }
+
+  return s.registers.get(r) ?? BitVec.zero(64);
+}
+
+export function writeGpr(
+  s: MachineState,
+  regName: string,
+  val: BitVec<64>,
+): MachineState {
+  const r = regName.toLowerCase();
+
+  if (s.arch === "riscv" && (r === "zero" || r === "x0")) return s;
+  if (s.arch === "arm64" && (r === "xzr" || r === "wzr")) return s;
+
+  const nextRegs = new Map(s.registers);
+
+  if (s.arch === "x86_64" && r in X86_SUBREGISTERS) {
+    const info = X86_SUBREGISTERS[r];
+    if (info.width === 32) {
+      nextRegs.set(info.parent, val.trunc32().zext64());
+      return { ...s, registers: nextRegs };
     }
-
-    // x86 Sub-registers
-    if (this.arch === "x86_64") {
-      if (r === "eax")
-        return BitVec.of(64, this.registers.get("rax")?.trunc32().val ?? 0n);
-      if (r === "ebx")
-        return BitVec.of(64, this.registers.get("rbx")?.trunc32().val ?? 0n);
-      if (r === "ecx")
-        return BitVec.of(64, this.registers.get("rcx")?.trunc32().val ?? 0n);
-      if (r === "edx")
-        return BitVec.of(64, this.registers.get("rdx")?.trunc32().val ?? 0n);
-      if (r === "esi")
-        return BitVec.of(64, this.registers.get("rsi")?.trunc32().val ?? 0n);
-      if (r === "edi")
-        return BitVec.of(64, this.registers.get("rdi")?.trunc32().val ?? 0n);
+    const cur = s.registers.get(info.parent)?.val ?? 0n;
+    let updated: bigint;
+    if (info.isHigh) {
+      updated = (cur & ~0xff00n) | ((val.val & 0xffn) << 8n);
+    } else if (info.width === 16) {
+      updated = (cur & ~0xffffn) | (val.val & 0xffffn);
+    } else {
+      updated = (cur & ~0xffn) | (val.val & 0xffn);
     }
-
-    // ARM 32-bit views (w0..w30)
-    if (this.arch === "arm64" && r.startsWith("w")) {
-      const parent = `x${r.slice(1)}`;
-      return BitVec.of(64, this.registers.get(parent)?.trunc32().val ?? 0n);
-    }
-
-    return this.registers.get(r) ?? BitVec.zero(64);
+    nextRegs.set(info.parent, BitVec.of(64, updated));
+    return { ...s, registers: nextRegs };
   }
 
-  setReg(name: string, val: BitVec<64>): MachineState {
-    const r = name.toLowerCase();
-
-    // Writes to zero register are discarded
-    if (this.arch === "riscv" && (r === "zero" || r === "x0")) return this;
-    if (this.arch === "arm64" && (r === "xzr" || r === "wzr")) return this;
-
-    const nextRegs = new Map(this.registers);
-
-    if (this.arch === "x86_64") {
-      if (r === "eax") {
-        nextRegs.set("rax", val.trunc32().zext64());
-        return this.withRegisters(nextRegs);
-      }
-      if (r === "ebx") {
-        nextRegs.set("rbx", val.trunc32().zext64());
-        return this.withRegisters(nextRegs);
-      }
-      if (r === "ecx") {
-        nextRegs.set("rcx", val.trunc32().zext64());
-        return this.withRegisters(nextRegs);
-      }
-      if (r === "edx") {
-        nextRegs.set("rdx", val.trunc32().zext64());
-        return this.withRegisters(nextRegs);
-      }
-      if (r === "esi") {
-        nextRegs.set("rsi", val.trunc32().zext64());
-        return this.withRegisters(nextRegs);
-      }
-      if (r === "edi") {
-        nextRegs.set("rdi", val.trunc32().zext64());
-        return this.withRegisters(nextRegs);
-      }
-    }
-
-    if (this.arch === "arm64" && r.startsWith("w")) {
-      const parent = `x${r.slice(1)}`;
-      nextRegs.set(parent, val.trunc32().zext64());
-      return this.withRegisters(nextRegs);
-    }
-
-    nextRegs.set(r, this.arch === "x86_32" ? val.trunc32().zext64() : val);
-    return this.withRegisters(nextRegs);
+  if (s.arch === "arm64" && r.startsWith("w")) {
+    const parent = `x${r.slice(1)}`;
+    nextRegs.set(parent, val.trunc32().zext64());
+    return { ...s, registers: nextRegs };
   }
 
-  // -------------------------------------------------------------------------
-  // Immutable With-Copy Helpers
-  // -------------------------------------------------------------------------
+  const bounded = s.arch === "x86_32" ? val.trunc32().zext64() : val;
+  nextRegs.set(r, bounded);
+  return { ...s, registers: nextRegs };
+}
 
-  withRegisters(registers: ReadonlyMap<string, BitVec<64>>): MachineState {
-    return new MachineState({ ...this, registers });
-  }
+export function appendTrace(
+  s: MachineState,
+  stream: "stdout" | "stderr" | "kernel_log",
+  text: string,
+): MachineState {
+  return {
+    ...s,
+    trace: [...s.trace, { stream, text, stepTick: s.stepCount + 1 }],
+  };
+}
 
-  withPc(pc: BitVec<64>): MachineState {
-    return new MachineState({ ...this, pc });
-  }
-
-  withPrivilege(privilege: Privilege): MachineState {
-    return new MachineState({ ...this, privilege });
-  }
-
-  withMemory(memory: PureMemory): MachineState {
-    return new MachineState({ ...this, memory });
-  }
-
-  withSpecial(name: string, value: string): MachineState {
-    const next = new Map(this.specialRegisters);
-    next.set(name, value);
-    return new MachineState({ ...this, specialRegisters: next });
-  }
-
-  withStack(stack: readonly StackSlot[]): MachineState {
-    return new MachineState({ ...this, stack });
-  }
-
-  appendTrace(
-    stream: "stdout" | "stderr" | "kernel_log",
-    text: string,
-  ): MachineState {
-    return new MachineState({
-      ...this,
-      trace: [...this.trace, { stream, text, stepTick: this.stepCount + 1 }],
-    });
-  }
-
-  withHalted(isHalted: boolean, exitCode: number | null = null): MachineState {
-    return new MachineState({ ...this, isHalted, exitCode });
-  }
-
-  withMicroSteps(microSteps: readonly MicroOpStep[]): MachineState {
-    return new MachineState({ ...this, microSteps });
-  }
-
-  withFlags(flags: MachineFlags): MachineState {
-    return new MachineState({ ...this, flags });
-  }
-
-  withActiveLineIndex(activeLineIndex: number): MachineState {
-    return new MachineState({ ...this, activeLineIndex });
-  }
-
-  incrementStep(): MachineState {
-    return new MachineState({ ...this, stepCount: this.stepCount + 1 });
-  }
+export function setSpecialReg(
+  s: MachineState,
+  name: string,
+  value: BitVec<64>,
+  note?: string,
+): MachineState {
+  const next = new Map(s.specialRegisters);
+  next.set(name, { value, note });
+  return { ...s, specialRegisters: next };
 }

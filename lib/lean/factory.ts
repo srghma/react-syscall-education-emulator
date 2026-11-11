@@ -1,20 +1,21 @@
 import { BitVec } from "./fp";
-import type { Arch, Privilege } from "./domain";
-import { MachineState, type StackSlot } from "./state";
+import type { Arch, Privilege, SpecialRegEntry } from "./domain";
+import type { MachineState, StackSlot } from "./state";
 import { PureMemory } from "./memory";
 
-export function createInitialMachine(arch: Arch): MachineState {
+export function createInitialMachine(
+  arch: Arch,
+  initialPrivilege?: Privilege,
+): MachineState {
   const regs = new Map<string, BitVec<64>>();
-  const specials = new Map<string, string>();
-  let mem = new PureMemory();
+  const specials = new Map<string, SpecialRegEntry>();
+  const mem = new PureMemory();
   let privilege: Privilege;
   let spVal: BitVec<64>;
 
-  mem = mem.writeAscii(0x00402000n, "Hello from SyscallEDU!\n");
-
   switch (arch) {
     case "x86_32": {
-      privilege = { tag: "x86", ring: 3 };
+      privilege = initialPrivilege ?? { tag: "x86", ring: 3 };
       spVal = BitVec.of(64, 0xbf800000n);
       for (const r of [
         "eax",
@@ -29,15 +30,27 @@ export function createInitialMachine(arch: Arch): MachineState {
         regs.set(r, BitVec.zero(64));
       }
       regs.set("esp", spVal);
-      specials.set("IDTR", "0x80000000 (Limit: 0x07FF)");
-      specials.set("MSR 0x174 (SYSENTER_CS)", "0x0060 (Kernel CS)");
-      specials.set("MSR 0x175 (SYSENTER_ESP)", "0xc0002000 (Kernel ESP0)");
-      specials.set("MSR 0x176 (SYSENTER_EIP)", "0xc0001000 (sysenter_entry)");
+      specials.set("IDTR", {
+        value: BitVec.of(64, 0x80000000n),
+        note: "Limit: 0x07FF",
+      });
+      specials.set("MSR 0x174 (SYSENTER_CS)", {
+        value: BitVec.of(64, 0x0060n),
+        note: "Kernel CS",
+      });
+      specials.set("MSR 0x175 (SYSENTER_ESP)", {
+        value: BitVec.of(64, 0xc0002000n),
+        note: "Kernel ESP0",
+      });
+      specials.set("MSR 0x176 (SYSENTER_EIP)", {
+        value: BitVec.of(64, 0xc0001000n),
+        note: "sysenter_entry",
+      });
       break;
     }
 
     case "x86_64": {
-      privilege = { tag: "x86", ring: 3 };
+      privilege = initialPrivilege ?? { tag: "x86", ring: 3 };
       spVal = BitVec.of(64, 0x7fffffffe000n);
       for (const r of [
         "rax",
@@ -60,28 +73,43 @@ export function createInitialMachine(arch: Arch): MachineState {
         regs.set(r, BitVec.zero(64));
       }
       regs.set("rsp", spVal);
-      specials.set("IA32_LSTAR", "0xffffffff81e00000 (entry_SYSCALL_64)");
-      specials.set("IA32_STAR", "0x0023001000000000");
-      specials.set("IA32_FMASK", "0x0000000000047700 (Mask TF, IF, DF, AC)");
+      specials.set("IA32_LSTAR", {
+        value: BitVec.of(64, 0xffffffff81e00000n),
+        note: "entry_SYSCALL_64",
+      });
+      specials.set("IA32_STAR", {
+        value: BitVec.of(64, 0x0023001000000000n),
+        note: "Selectors",
+      });
+      specials.set("IA32_FMASK", {
+        value: BitVec.of(64, 0x0000000000047700n),
+        note: "TF, IF, DF, IOPL, NT, AC",
+      });
       break;
     }
 
     case "arm64": {
-      privilege = { tag: "arm", el: 0, secure: false };
+      privilege = initialPrivilege ?? { tag: "arm", el: 0, secure: false };
       spVal = BitVec.of(64, 0x0000ffffffffb000n);
       for (let i = 0; i <= 30; i++) {
         regs.set(`x${i}`, BitVec.zero(64));
       }
       regs.set("sp", spVal);
-      specials.set("ELR_EL1", "0x0000000000000000");
-      specials.set("SPSR_EL1", "0x00000000 (EL0t, interrupts unmasked)");
-      specials.set("ESR_EL1", "0x00000000");
-      specials.set("VBAR_EL1", "0xffff800008080000");
+      specials.set("ELR_EL1", { value: BitVec.zero(64), note: "Return PC" });
+      specials.set("SPSR_EL1", {
+        value: BitVec.zero(64),
+        note: "EL0t, interrupts unmasked",
+      });
+      specials.set("ESR_EL1", { value: BitVec.zero(64), note: "Syndrome" });
+      specials.set("VBAR_EL1", {
+        value: BitVec.of(64, 0xffff800008080000n),
+        note: "Vector Base",
+      });
       break;
     }
 
     case "riscv": {
-      privilege = { tag: "riscv", mode: "U" };
+      privilege = initialPrivilege ?? { tag: "riscv", mode: "U" };
       spVal = BitVec.of(64, 0x7ffffff0n);
       for (const r of [
         "zero",
@@ -120,10 +148,16 @@ export function createInitialMachine(arch: Arch): MachineState {
         regs.set(r, BitVec.zero(64));
       }
       regs.set("sp", spVal);
-      specials.set("sepc", "0x0000000000000000");
-      specials.set("scause", "0 (None)");
-      specials.set("stvec", "0x80000000 (Supervisor Trap Base)");
-      specials.set("medeleg", "0x00000100 (Delegate U-Mode ecall to S-Mode)");
+      specials.set("sepc", { value: BitVec.zero(64), note: "Trap PC" });
+      specials.set("scause", { value: BitVec.zero(64), note: "None" });
+      specials.set("stvec", {
+        value: BitVec.of(64, 0x80000000n),
+        note: "Supervisor Trap Base",
+      });
+      specials.set("medeleg", {
+        value: BitVec.of(64, 0x00000100n),
+        note: "Delegated U-Mode ecall",
+      });
       break;
     }
   }
@@ -132,7 +166,7 @@ export function createInitialMachine(arch: Arch): MachineState {
     { address: spVal, value: BitVec.zero(64), tag: "Initial Stack Top" },
   ];
 
-  return new MachineState({
+  return {
     arch,
     pc: BitVec.of(64, 0x00400000n),
     privilege,
@@ -147,5 +181,6 @@ export function createInitialMachine(arch: Arch): MachineState {
     exitCode: null,
     stepCount: 0,
     activeLineIndex: 0,
-  });
+    kernelStackTop: 0xc0002000n,
+  };
 }

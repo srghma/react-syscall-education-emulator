@@ -1,8 +1,7 @@
 import type { InstructionSpec } from "@/types/emulator";
-import { parseAssembly, type Program } from "@/lib/lean/assembler";
 
 export const INSTRUCTIONS_DATA: InstructionSpec[] = [
-  // 1. 1978 / 1985: Early x86 Software Interrupt Gates
+  // 1. 1978 / 1985: x86 32-bit IDT Software Interrupt Gate
   {
     id: "int-0x80",
     mnemonic: "int 0x80",
@@ -13,8 +12,8 @@ export const INSTRUCTIONS_DATA: InstructionSpec[] = [
     yearSiliconShipped: 1985,
     era: "Intel 80386 Protected Mode / Classic Linux",
     assemblerType: "GNU Assembler (.intel_syntax noprefix)",
-    sourcePrivilege: "Ring 3 (User)",
-    targetPrivilege: "Ring 0 (Kernel)",
+    sourcePrivilege: { tag: "x86", ring: 3 },
+    targetPrivilege: { tag: "x86", ring: 0 },
     hardwareMechanism:
       "Interrupt Descriptor Table (IDT gate 0x80) via TSS.ESP0 kernel stack",
     returnInstruction: "iret",
@@ -24,8 +23,11 @@ export const INSTRUCTIONS_DATA: InstructionSpec[] = [
       "ESP, SS",
     ],
     summary:
-      "Legacy 32-bit Linux syscall interface. Traps through IDT gate 0x80, switches to the TSS Ring 0 stack, and pushes SS, ESP, EFLAGS, CS, and return EIP.",
-    docsReference: "Intel SDM Vol 3A, Section 6.12",
+      "Legacy 32-bit Linux syscall interface. Traps through IDT gate 0x80, switches to the TSS Ring 0 stack, pushes [SS, ESP, EFLAGS, CS, EIP], and returns via iret.",
+    docsReference: "Intel 64 and IA-32 Architectures SDM, Vol 3A, §6.12",
+    sourceUrl:
+      "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html",
+    verified: true,
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -43,14 +45,14 @@ export const INSTRUCTIONS_DATA: InstructionSpec[] = [
         stepNumber: 3,
         description: "Context Push",
         hardwareAction:
-          "Pushes SS, ESP, EFLAGS, CS, and return EIP onto Ring 0 stack.",
+          "Pushes [SS, ESP, EFLAGS, CS, Return EIP] onto Ring 0 stack.",
         affectedComponents: ["Ring 0 Stack"],
       },
       {
         stepNumber: 4,
         description: "Privilege Elevation",
-        hardwareAction: "Switches CPL to 0; clears IF in EFLAGS.",
-        affectedComponents: ["CS.DPL", "EFLAGS.IF"],
+        hardwareAction: "CPL switches 3 -> 0.",
+        affectedComponents: ["CS.DPL", "CPL"],
       },
     ],
     defaultProgram: `# 32-bit Linux System Call with Real String Buffer
@@ -67,9 +69,9 @@ _start:
     # sys_write(fd: 1, buf: msg, count: len)
     mov eax, 4          # sys_write (4)
     mov ebx, 1          # stdout (1)
-    mov ecx, msg        # pointer to buffer in memory
+    lea ecx, [msg]      # buffer pointer in memory
     mov edx, len        # byte count
-    int 0x80            # Hardware interrupt -> pushes SS, ESP, EFLAGS, CS, EIP to ESP0
+    int 0x80            # Hardware interrupt -> kernel handler dispatches and iret returns
 
     # sys_exit(0)
     mov eax, 1          # sys_exit (1)
@@ -89,8 +91,8 @@ _start:
     yearSiliconShipped: 1997,
     era: "Intel P6 / Pentium II Era",
     assemblerType: "GNU Assembler (.intel_syntax noprefix)",
-    sourcePrivilege: "Ring 3 (User)",
-    targetPrivilege: "Ring 0 (Kernel)",
+    sourcePrivilege: { tag: "x86", ring: 3 },
+    targetPrivilege: { tag: "x86", ring: 0 },
     hardwareMechanism:
       "Model-Specific Registers (IA32_SYSENTER_CS, IA32_SYSENTER_ESP, IA32_SYSENTER_EIP)",
     returnInstruction: "sysexit",
@@ -101,8 +103,11 @@ _start:
       "MSR 0x174..0x176",
     ],
     summary:
-      "Bypasses IDT lookups by jumping directly to cached kernel entry MSRs. Userland stages return EIP in EDX and user ESP in ECX for sysexit.",
-    docsReference: "Intel SDM Vol 2B: SYSENTER",
+      "Bypasses IDT lookups by jumping directly to cached kernel entry MSRs. Dispatches system call and returns to Ring 3 via sysexit.",
+    docsReference: "Intel SDM Vol 2B: SYSENTER Instruction Reference",
+    sourceUrl:
+      "https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html",
+    verified: true,
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -138,9 +143,9 @@ _start:
     # sys_write(fd: 1, buf: msg, count: len)
     mov eax, 4          # sys_write
     mov ebx, 1          # stdout
-    mov ecx, msg        # buffer pointer
+    lea ecx, [msg]      # buffer pointer
     mov edx, len        # byte count
-    sysenter            # Direct jump to kernel via MSRs 0x174..0x176
+    sysenter            # Direct jump to kernel via MSRs; sysexit returns
 
     # sys_exit(0)
     mov eax, 1          # sys_exit
@@ -160,8 +165,8 @@ _start:
     yearSiliconShipped: 2003,
     era: "AMD64 / Long Mode Standard",
     assemblerType: "GNU Assembler (.intel_syntax noprefix)",
-    sourcePrivilege: "Ring 3 (User)",
-    targetPrivilege: "Ring 0 (Kernel)",
+    sourcePrivilege: { tag: "x86", ring: 3 },
+    targetPrivilege: { tag: "x86", ring: 0 },
     hardwareMechanism:
       "MSRs: IA32_LSTAR (entry RIP), IA32_STAR (selectors), IA32_FMASK (RFLAGS mask)",
     returnInstruction: "sysretq",
@@ -172,9 +177,11 @@ _start:
       "R11 (saved RFLAGS)",
     ],
     summary:
-      "The definitive high-speed 64-bit system call instruction. Copies next RIP directly into RCX and RFLAGS into R11, masks flags via IA32_FMASK, and jumps to IA32_LSTAR.",
-    docsReference:
-      "AMD64 Architecture Programmer's Manual Vol 3, Section 3.1.1",
+      "The definitive high-speed 64-bit system call instruction. Copies next RIP into RCX and RFLAGS into R11, masks flags via IA32_FMASK, and jumps to IA32_LSTAR.",
+    docsReference: "AMD64 Architecture Programmer's Manual Vol 3, §3.1.1",
+    sourceUrl:
+      "https://www.amd.com/en/resources/support-articles/processor-manuals.html",
+    verified: true,
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -185,7 +192,8 @@ _start:
       {
         stepNumber: 2,
         description: "Mask Flags",
-        hardwareAction: "RFLAGS &= ~(IA32_FMASK) (clears IF, TF, DF, AC).",
+        hardwareAction:
+          "RFLAGS &= ~(IA32_FMASK) (clears IF, TF, DF, IOPL, NT, AC).",
         affectedComponents: ["RFLAGS", "IA32_FMASK"],
       },
       {
@@ -215,9 +223,9 @@ _start:
     # sys_write(fd: 1, buf: msg, count: len)
     mov rax, 1          # sys_write (Linux x86_64 = 1)
     mov rdi, 1          # stdout (1)
-    lea rsi, msg        # pointer to string buffer
+    lea rsi, [rip + msg] # RIP-relative string buffer pointer
     mov rdx, len        # length in bytes
-    syscall             # RCX <= RIP, R11 <= RFLAGS, RIP <= LSTAR
+    syscall             # RCX <= RIP, R11 <= RFLAGS, RIP <= LSTAR; returns via sysretq
 
     # sys_exit(0)
     mov rax, 60         # sys_exit (Linux x86_64 = 60)
@@ -237,8 +245,8 @@ _start:
     yearSiliconShipped: 2005,
     era: "ARM TrustZone Security Architecture",
     assemblerType: "GNU Assembler AArch64",
-    sourcePrivilege: "EL1 (Kernel)",
-    targetPrivilege: "EL3 (Secure Monitor / Firmware)",
+    sourcePrivilege: { tag: "arm", el: 1, secure: false },
+    targetPrivilege: { tag: "arm", el: 3, secure: true },
     hardwareMechanism:
       "Trap to EL3; switches to Secure World; ESR_EL3 = 0x5e000000 (EC=0x17)",
     returnInstruction: "eret",
@@ -249,8 +257,11 @@ _start:
       "ESR_EL3",
     ],
     summary:
-      "Traps from the Non-Secure OS into EL3 Secure Monitor / ARM Trusted Firmware (ATF).",
-    docsReference: "ARM DEN 0028C (SMCCC Specification)",
+      "Gates communication across TrustZone. Traps from the Non-Secure OS at EL1 into EL3 Secure Monitor / ARM Trusted Firmware.",
+    docsReference:
+      "SMC Calling Convention (SMCCC) Specification (ARM DEN 0028C)",
+    sourceUrl: "https://developer.arm.com/documentation/den0028/latest",
+    verified: true,
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -276,8 +287,9 @@ _start:
 
 _start:
     mov x0, 0x80000000  // SMCCC_VERSION query (Arm Architecture Range)
-    smc #0              // Trap to EL3 / ATF
+    smc #0              // Trap to EL3 / ATF; eret returns to EL1
 
+    // Exit application via EL1 kernel
     mov x8, 93
     mov x0, 0
     svc #0
@@ -294,9 +306,9 @@ _start:
     yearIntroduced: 2011,
     yearSiliconShipped: 2013,
     era: "ARMv8-A 64-bit Architecture",
-    assemblerType: "GNU Assembler (.syntax unified)",
-    sourcePrivilege: "EL0 (User)",
-    targetPrivilege: "EL1 (Kernel)",
+    assemblerType: "GNU Assembler AArch64",
+    sourcePrivilege: { tag: "arm", el: 0, secure: false },
+    targetPrivilege: { tag: "arm", el: 1, secure: false },
     hardwareMechanism:
       "Synchronous Exception to EL1; saves PC into ELR_EL1, PSTATE into SPSR_EL1, updates ESR_EL1",
     returnInstruction: "eret",
@@ -308,7 +320,9 @@ _start:
     ],
     summary:
       "Triggers a synchronous exception from EL0 to EL1. Populates ESR_EL1 with EC=0x15 (SVC) and IL=1 (0x56000000).",
-    docsReference: "ARM Architecture Reference Manual ARMv8 (DDI 0487)",
+    docsReference: "Arm Architecture Reference Manual Armv8 (ARM DDI 0487)",
+    sourceUrl: "https://developer.arm.com/documentation/ddi0487/latest",
+    verified: true,
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -350,7 +364,7 @@ _start:
     mov x0, 1           // fd = 1 (stdout)
     adr x1, msg         // load address of string into x1
     mov x2, len         // length from symbol
-    svc #0              // Transition EL0 -> EL1; ESR_EL1.EC = 0x15
+    svc #0              // Transition EL0 -> EL1; eret returns to EL0
 
     // sys_exit(0)
     mov x8, 93          // sys_exit (ARM64 Linux = 93)
@@ -370,8 +384,8 @@ _start:
     yearSiliconShipped: 2013,
     era: "ARMv8 EL2 Hypervisor Extension",
     assemblerType: "GNU Assembler AArch64",
-    sourcePrivilege: "EL1 (Kernel)",
-    targetPrivilege: "EL2 (Hypervisor)",
+    sourcePrivilege: { tag: "arm", el: 1, secure: false },
+    targetPrivilege: { tag: "arm", el: 2, secure: false },
     hardwareMechanism:
       "Trap to EL2; saves PC to ELR_EL2, PSTATE to SPSR_EL2, ESR_EL2 = 0x5a000000 (EC=0x16)",
     returnInstruction: "eret",
@@ -383,7 +397,10 @@ _start:
     ],
     summary:
       "Enables guest kernels at EL1 to invoke EL2 hypervisor services such as CPU power control (PSCI).",
-    docsReference: "ARM DEN 0022D (PSCI Specification)",
+    docsReference:
+      "Power State Coordination Interface (PSCI) Spec (ARM DEN 0022D)",
+    sourceUrl: "https://developer.arm.com/documentation/den0022/latest",
+    verified: true,
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -408,12 +425,14 @@ _start:
 .global _start
 
 _start:
+    // PSCI CPU_ON (0x84000003)
     mov x0, 0x84000003  // PSCI_0_2_FN_CPU_ON Function ID
     mov x1, 1           // Core ID = 1
     mov x2, 0x80080000  // Core entry point
-    hvc #0              // Trap to Hypervisor (EL2)
+    hvc #0              // Trap to Hypervisor (EL2); eret returns to EL1
 
     mov x8, 93
+    mov x0, 0
     svc #0
 `,
   },
@@ -429,8 +448,8 @@ _start:
     yearSiliconShipped: 2018,
     era: "RISC-V Privileged Architecture",
     assemblerType: "GNU Assembler (riscv64-unknown-elf-as)",
-    sourcePrivilege: "U-Mode (User)",
-    targetPrivilege: "S-Mode (Supervisor)",
+    sourcePrivilege: { tag: "riscv", mode: "U" },
+    targetPrivilege: { tag: "riscv", mode: "S" },
     hardwareMechanism:
       "Hardware stores the ecall address itself into sepc, writes scause=8, jumps to stvec",
     returnInstruction: "sret / mret",
@@ -444,6 +463,8 @@ _start:
       "The unified RISC-V environment call. Trapping from U-mode writes the address of ecall itself into sepc and delegates to S-Mode.",
     docsReference:
       "The RISC-V Instruction Set Manual, Vol II: Privileged Architecture",
+    sourceUrl: "https://riscv.org/technical/specifications/",
+    verified: true,
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -485,7 +506,7 @@ _start:
     li a0, 1            # fd = 1 (stdout)
     la a1, msg          # load address of message
     li a2, len          # length from equate symbol
-    ecall               # Trap to S-mode (scause = 8, sepc = PC)
+    ecall               # Trap to S-mode; sret returns to U-mode
 
     # sys_exit(0)
     li a7, 93           # Linux sys_exit (93)
@@ -505,19 +526,23 @@ _start:
     yearSiliconShipped: 2023,
     era: "Intel 4th Gen Xeon (Sapphire Rapids)",
     assemblerType: "GNU Assembler (.intel_syntax noprefix)",
-    sourcePrivilege: "TD Guest (VMX Non-Root Encrypted)",
-    targetPrivilege: "Intel SEAM (Secure Arbitration Mode)",
+    sourcePrivilege: { tag: "tdx", domain: "TDGuest" },
+    targetPrivilege: { tag: "tdx", domain: "SEAM" },
     hardwareMechanism:
       "Transitions to authenticated Intel SEAM module; scrubs unshared registers before signaling host VMM",
     returnInstruction: "SEAMRET",
     keyRegisters: [
       "RAX (Leaf 0: TDG.VP.VMCALL)",
       "RCX (GPR sharing bitmask)",
+      "R10 (standard call = 0)",
       "R11 (sub-function)",
     ],
     summary:
       "Executed inside a confidential VM. Leaves unshared registers sanitized before signaling the untrusted host VMM.",
-    docsReference: "Intel TDX Module Architecture Specification",
+    docsReference: "Intel TDX Module Base Architecture & GHCI Specification",
+    sourceUrl:
+      "https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/documentation.html",
+    verified: true,
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -541,17 +566,17 @@ _start:
         affectedComponents: ["RBX", "RSI", "RDI", "R12..R15"],
       },
     ],
-    defaultProgram: `# tdcall: Intel TDX Confidential VM Call
+    defaultProgram: `# tdcall: Intel TDX Confidential VM Call (GHCI compliant)
 .intel_syntax noprefix
 .section .text
 .global _start
 
 _start:
     mov rax, 0          # Leaf 0: TDG.VP.VMCALL
-    mov rcx, 0x0C00     # Expose only R10 and R11
-    mov r11, 1          # Sub-function 1: Print/Logging
-    mov r12, 0x1000     # Shared parameter buffer
-    tdcall              # Trap to SEAM; sanitize guest state
+    mov rcx, 0x0C00     # Expose only R10 and R11 to host VMM
+    mov r10, 0          # Standard call category (0) per TDX GHCI
+    mov r11, 1          # Sub-function 1: GetQuote / Notification
+    tdcall              # Trap to SEAM; sanitize guest state; SEAMRET returns
 
     mov rax, 60
     xor rdi, rdi
@@ -570,8 +595,8 @@ _start:
     yearSiliconShipped: 2023,
     era: "Intel 4th Gen Xeon (Sapphire Rapids)",
     assemblerType: "GNU Assembler (.intel_syntax noprefix)",
-    sourcePrivilege: "Host VMM (Root Ring 0)",
-    targetPrivilege: "Intel SEAM (Secure Arbitration Mode)",
+    sourcePrivilege: { tag: "tdx", domain: "HostVMM" },
+    targetPrivilege: { tag: "tdx", domain: "SEAM" },
     hardwareMechanism:
       "Root VMX invocation of Intel SEAM module; enforces Secure EPT and KeyID allocation",
     returnInstruction: "SEAMRET",
@@ -583,6 +608,9 @@ _start:
     summary:
       "Executed by the host hypervisor in VMX root operation to manage trust domains.",
     docsReference: "Intel TDX Module Base Architecture: SEAMCALL",
+    sourceUrl:
+      "https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/documentation.html",
+    verified: true,
     hardwareSteps: [
       {
         stepNumber: 1,
@@ -607,7 +635,7 @@ _start:
     mov rax, 21         # Leaf 21 (0x15): TDH.MNG.INIT
     mov rcx, 0x7A000000 # TDR physical page address
     mov rdx, 7          # Assigned Hardware KeyID
-    seamcall            # Enter SEAM; verify hardware crypto configuration
+    seamcall            # Enter SEAM; verify hardware crypto configuration; SEAMRET returns
 
     mov rax, 60         # sys_exit
     xor rdi, rdi        # status = 0
@@ -623,18 +651,3 @@ export function getInstructionById(id: string): InstructionSpec | undefined {
 export const CODE_EXAMPLES: Record<string, string> = Object.fromEntries(
   INSTRUCTIONS_DATA.map((item) => [item.id, item.defaultProgram]),
 );
-
-/**
- * Pre-parse and validate all 9 default assembly programs at module load time.
- */
-export const PREPARSED_PROGRAMS: Record<string, Program> = {};
-
-for (const item of INSTRUCTIONS_DATA) {
-  const result = parseAssembly(item.defaultProgram, item.arch);
-  if (result.tag === "error") {
-    throw new Error(
-      `[Startup Validation Failed] Error parsing default program for '${item.id}': ${result.error}`,
-    );
-  }
-  PREPARSED_PROGRAMS[item.id] = result.value;
-}

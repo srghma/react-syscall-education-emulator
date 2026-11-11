@@ -2,10 +2,10 @@ import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { INSTRUCTIONS_DATA, getInstructionById } from "@/lib/instruction-data";
+import { privilegeToString } from "@/lib/lean/domain";
 import EmulatorDebugger from "@/components/EmulatorDebugger";
 import ArchitectureDiagram from "@/components/ArchitectureDiagram";
 
-// Opt this segment out of instant shell validation so params resolution can block or stream cleanly
 export const instant = false;
 
 interface PageProps {
@@ -26,7 +26,7 @@ async function InstructionDetailContent({ params }: PageProps) {
 
   return (
     <div className="space-y-8">
-      {/* Breadcrumb Navigation */}
+      {/* Breadcrumbs */}
       <nav className="flex items-center gap-2 text-xs text-zinc-500 font-mono">
         <Link
           href="/"
@@ -59,11 +59,11 @@ async function InstructionDetailContent({ params }: PageProps) {
 
           <div className="flex items-center gap-2 text-xs font-mono">
             <span className="px-2 py-1 rounded bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900">
-              {spec.sourcePrivilege}
+              {privilegeToString(spec.sourcePrivilege)}
             </span>
             <span className="text-zinc-400 font-bold">&rarr;</span>
             <span className="px-2 py-1 rounded bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
-              {spec.targetPrivilege}
+              {privilegeToString(spec.targetPrivilege)}
             </span>
           </div>
         </div>
@@ -72,7 +72,7 @@ async function InstructionDetailContent({ params }: PageProps) {
           {spec.summary}
         </p>
 
-        {/* Technical Specification Metadata */}
+        {/* Specifications */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 text-xs font-mono">
           <div className="p-3 rounded-lg bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800">
             <div className="text-[10px] text-zinc-400 uppercase font-sans font-bold">
@@ -103,7 +103,7 @@ async function InstructionDetailContent({ params }: PageProps) {
           </div>
         </div>
 
-        {/* Key Registers Involved */}
+        {/* Register Roles */}
         <div className="pt-2">
           <div className="text-[11px] font-sans font-bold uppercase tracking-wider text-zinc-400 mb-2">
             Architectural Registers & ABI Staging
@@ -121,11 +121,11 @@ async function InstructionDetailContent({ params }: PageProps) {
         </div>
       </div>
 
-      {/* Interactive Silicon Debugger */}
+      {/* Debugger */}
       <EmulatorDebugger key={spec.id} initialInstructionId={spec.id} />
 
-      {/* Global Privilege Routing Hierarchy */}
-      <ArchitectureDiagram />
+      {/* Global Diagram with Active Card Glow */}
+      <ArchitectureDiagram activeId={spec.id} />
     </div>
   );
 }
@@ -142,10 +142,8 @@ function InstructionDetailSkeleton() {
 
 export default function InstructionDetailPage(props: PageProps) {
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <Suspense fallback={<InstructionDetailSkeleton />}>
-        <InstructionDetailContent params={props.params} />
-      </Suspense>
-    </div>
+    <Suspense fallback={<InstructionDetailSkeleton />}>
+      <InstructionDetailContent params={props.params} />
+    </Suspense>
   );
 }

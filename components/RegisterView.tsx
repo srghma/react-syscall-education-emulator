@@ -2,71 +2,76 @@ import type { Arch } from "@/lib/lean/domain";
 
 interface RegisterViewProps {
   registers: Record<string, bigint>;
+  previousRegisters?: Record<string, bigint>;
   arch: Arch;
 }
 
 const REGISTER_ROLES: Record<Arch, Record<string, string>> = {
   x86_64: {
-    rax: "Syscall NR / Return Value",
-    rdi: "1st Argument (fd / status)",
-    rsi: "2nd Argument (buf pointer)",
-    rdx: "3rd Argument (byte count)",
-    r10: "4th Argument (replaces RCX)",
+    rax: "Syscall NR / Return",
+    rdi: "1st Arg (fd / exit)",
+    rsi: "2nd Arg (buf ptr)",
+    rdx: "3rd Arg (count)",
+    r10: "4th Arg (replaces RCX)",
     r8: "5th Argument",
     r9: "6th Argument",
-    rcx: "Hardware Return RIP (syscall)",
+    rcx: "Hardware Return RIP",
     r11: "Hardware Return RFLAGS",
-    rsp: "User Stack Pointer",
-    rbp: "Frame Pointer / Callee-saved",
-    rbx: "Callee-saved GPR",
-    r12: "Callee-saved GPR",
-    r13: "Callee-saved GPR",
-    r14: "Callee-saved GPR",
-    r15: "Callee-saved GPR",
+    rsp: "Stack Pointer",
+    rbp: "Frame Pointer",
+    rbx: "Callee-saved",
+    r12: "Callee-saved",
+    r13: "Callee-saved",
+    r14: "Callee-saved",
+    r15: "Callee-saved",
   },
   x86_32: {
-    eax: "Syscall NR / Return Value",
-    ebx: "1st Argument (fd / exit code)",
-    ecx: "2nd Argument (buf / user ESP)",
-    edx: "3rd Argument (count / ret EIP)",
+    eax: "Syscall NR / Return",
+    ebx: "1st Arg (fd / exit)",
+    ecx: "2nd Arg (buf ptr)",
+    edx: "3rd Arg (count)",
     esi: "4th Argument",
     edi: "5th Argument",
-    ebp: "6th Argument / Frame Pointer",
-    esp: "User Stack Pointer",
+    ebp: "Frame Pointer",
+    esp: "Stack Pointer",
   },
   arm64: {
-    x8: "Syscall Number (AArch64 Linux)",
-    x0: "1st Arg (fd) / PSCI FID / Return",
-    x1: "2nd Arg (buf pointer)",
-    x2: "3rd Arg (byte count)",
+    x8: "Syscall NR (Linux)",
+    x0: "1st Arg / FID / Return",
+    x1: "2nd Arg (buf ptr)",
+    x2: "3rd Arg (count)",
     x3: "4th Argument",
     x4: "5th Argument",
     x5: "6th Argument",
     x6: "7th Argument",
     x7: "8th Argument",
-    sp: "Stack Pointer (SP_EL0)",
-    xzr: "Hardwired Zero Register",
-    x29: "Frame Pointer (FP)",
-    x30: "Link Register (LR)",
+    sp: "Stack Pointer",
+    xzr: "Hardwired Zero",
+    x29: "Frame Pointer",
+    x30: "Link Register",
   },
   riscv: {
-    a7: "Syscall Number (Linux RV64)",
-    a0: "1st Arg (fd) / Return Value",
-    a1: "2nd Arg (buf pointer)",
-    a2: "3rd Arg (byte count)",
+    a7: "Syscall NR (Linux)",
+    a0: "1st Arg / Return",
+    a1: "2nd Arg (buf ptr)",
+    a2: "3rd Arg (count)",
     a3: "4th Argument",
     a4: "5th Argument",
     a5: "6th Argument",
-    zero: "Hardwired Zero (x0)",
-    ra: "Return Address (x1)",
-    sp: "Stack Pointer (x2)",
-    gp: "Global Pointer (x3)",
-    tp: "Thread Pointer (x4)",
-    s0: "Frame Pointer / Saved (x8)",
+    zero: "Hardwired Zero",
+    ra: "Return Address",
+    sp: "Stack Pointer",
+    gp: "Global Pointer",
+    tp: "Thread Pointer",
+    s0: "Frame Pointer",
   },
 };
 
-export default function RegisterView({ registers, arch }: RegisterViewProps) {
+export default function RegisterView({
+  registers,
+  previousRegisters,
+  arch,
+}: RegisterViewProps) {
   const entries = Object.entries(registers);
   const roles = REGISTER_ROLES[arch] ?? {};
 
@@ -75,11 +80,10 @@ export default function RegisterView({ registers, arch }: RegisterViewProps) {
       <div className="flex items-center justify-between mb-3">
         <div>
           <h4 className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 uppercase tracking-wider">
-            General Purpose Registers & ABI Staging
+            General Purpose Registers
           </h4>
           <p className="text-[11px] text-zinc-500 font-sans mt-0.5">
-            Architecture-specific register assignments for arguments, numbers,
-            and pointers.
+            Green outlines indicate registers modified on the last step.
           </p>
         </div>
         <span className="text-[10px] font-mono text-zinc-500">
@@ -89,48 +93,54 @@ export default function RegisterView({ registers, arch }: RegisterViewProps) {
 
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 font-mono text-xs">
         {entries.map(([reg, val]) => {
+          const prevVal = previousRegisters?.[reg];
+          const hasMutated = prevVal !== undefined && prevVal !== val;
           const isNonZero = val !== 0n;
           const role = roles[reg.toLowerCase()];
 
           return (
             <div
               key={reg}
-              className={`p-2 rounded-lg border transition-colors flex flex-col justify-between ${
-                isNonZero
-                  ? "bg-emerald-50/60 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-800/60"
-                  : "bg-zinc-50 dark:bg-zinc-800/40 border-zinc-200 dark:border-zinc-800"
+              className={`p-2 rounded-lg border transition-all ${
+                hasMutated
+                  ? "bg-emerald-500/10 border-emerald-500 shadow-[0_0_0_1px_rgba(16,185,129,0.4)]"
+                  : isNonZero
+                    ? "bg-zinc-100 dark:bg-zinc-800/80 border-zinc-300 dark:border-zinc-700"
+                    : "bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800"
               }`}
+              title={
+                hasMutated
+                  ? `Mutated: 0x${prevVal.toString(16)} -> 0x${val.toString(16)}`
+                  : undefined
+              }
             >
-              <div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase text-zinc-700 dark:text-zinc-200">
-                    {reg}
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase text-zinc-700 dark:text-zinc-200">
+                  {reg}
+                </span>
+                {hasMutated && (
+                  <span className="text-[9px] px-1 rounded bg-emerald-500 text-white font-sans font-bold">
+                    DIFF
                   </span>
-                  {role && (
-                    <span
-                      className="text-[9px] font-sans truncate max-w-[90px] text-zinc-400 dark:text-zinc-500 font-medium"
-                      title={role}
-                    >
-                      {role}
-                    </span>
-                  )}
-                </div>
-
-                {role && (
-                  <div
-                    className="text-[10px] font-sans text-emerald-700 dark:text-emerald-400 truncate mt-0.5 font-medium"
-                    title={role}
-                  >
-                    {role}
-                  </div>
                 )}
               </div>
 
+              {role && (
+                <div
+                  className="text-[11px] font-sans text-zinc-500 dark:text-zinc-400 truncate mt-0.5"
+                  title={role}
+                >
+                  {role}
+                </div>
+              )}
+
               <div
                 className={`font-semibold truncate text-[11px] mt-1.5 ${
-                  isNonZero
-                    ? "text-emerald-700 dark:text-emerald-300"
-                    : "text-zinc-800 dark:text-zinc-300"
+                  hasMutated
+                    ? "text-emerald-600 dark:text-emerald-400 font-bold"
+                    : isNonZero
+                      ? "text-zinc-900 dark:text-zinc-100 font-medium"
+                      : "text-zinc-400 dark:text-zinc-600 font-normal"
                 }`}
                 title={`0x${val.toString(16)} (${val.toString()})`}
               >

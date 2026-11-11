@@ -1,6 +1,6 @@
 "use client";
 
-import type React from "react";
+import { useRef, type UIEvent, type KeyboardEvent } from "react";
 import type { Arch } from "@/lib/lean/domain";
 
 interface AssemblyEditorProps {
@@ -43,164 +43,7 @@ const STANDARD_MNEMONICS = new Set([
   "subs",
   "cmp",
   "hlt",
-  "push",
-  "pop",
-  "jmp",
-  "b",
-  "bl",
-  "jal",
-  "ret",
-]);
-
-const REGISTERS = new Set([
-  // x86
-  "rax",
-  "rbx",
-  "rcx",
-  "rdx",
-  "rsi",
-  "rdi",
-  "rbp",
-  "rsp",
-  "r8",
-  "r9",
-  "r10",
-  "r11",
-  "r12",
-  "r13",
-  "r14",
-  "r15",
-  "eax",
-  "ebx",
-  "ecx",
-  "edx",
-  "esi",
-  "edi",
-  "ebp",
-  "esp",
-  "ax",
-  "bx",
-  "cx",
-  "dx",
-  "si",
-  "di",
-  "bp",
-  "sp",
-  "al",
-  "bl",
-  "cl",
-  "dl",
-  "ah",
-  "bh",
-  "ch",
-  "dh",
-  "rip",
-  "eip",
-  "flags",
-  "eflags",
-  "rflags",
-  // ARM64
-  "x0",
-  "x1",
-  "x2",
-  "x3",
-  "x4",
-  "x5",
-  "x6",
-  "x7",
-  "x8",
-  "x9",
-  "x10",
-  "x11",
-  "x12",
-  "x13",
-  "x14",
-  "x15",
-  "x16",
-  "x17",
-  "x18",
-  "x19",
-  "x20",
-  "x21",
-  "x22",
-  "x23",
-  "x24",
-  "x25",
-  "x26",
-  "x27",
-  "x28",
-  "x29",
-  "x30",
-  "w0",
-  "w1",
-  "w2",
-  "w3",
-  "w4",
-  "w5",
-  "w6",
-  "w7",
-  "w8",
-  "w9",
-  "w10",
-  "w11",
-  "w12",
-  "w13",
-  "w14",
-  "w15",
-  "w16",
-  "w17",
-  "w18",
-  "w19",
-  "w20",
-  "w21",
-  "w22",
-  "w23",
-  "w24",
-  "w25",
-  "w26",
-  "w27",
-  "w28",
-  "w29",
-  "w30",
-  "sp",
-  "wsp",
-  "xzr",
-  "wzr",
-  "lr",
-  "fp",
-  "pc",
-  // RISC-V
-  "zero",
-  "ra",
-  "gp",
-  "tp",
-  "t0",
-  "t1",
-  "t2",
-  "t3",
-  "t4",
-  "t5",
-  "t6",
-  "s0",
-  "s1",
-  "s2",
-  "s3",
-  "s4",
-  "s5",
-  "s6",
-  "s7",
-  "s8",
-  "s9",
-  "s10",
-  "s11",
-  "a0",
-  "a1",
-  "a2",
-  "a3",
-  "a4",
-  "a5",
-  "a6",
-  "a7",
+  "nop",
 ]);
 
 function escapeHtml(str: string): string {
@@ -212,17 +55,11 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#039;");
 }
 
-/**
- * Single-pass lexer for assembly lines.
- * Eliminates regex chaining bugs and avoids mangling nested HTML tags.
- */
 function highlightLine(line: string, arch: Arch): string {
   if (!line) return "&nbsp;";
 
-  // In ARM64, // and @ are comments (# is the immediate prefix)
-  // In x86 / RISC-V, #, ;, and // are comments
   const commentPattern =
-    arch === "arm64" ? "(?:\\/\\/|@).*$" : "(?:[#;]|\\/\\/).*$";
+    arch === "arm64" ? "(?:\\/\\/).*$" : "(?:[#]|\\/\\/).*$";
 
   const tokenRegex = new RegExp(
     [
@@ -258,13 +95,11 @@ function highlightLine(line: string, arch: Arch): string {
     } else if (groups.word) {
       const lower = text.toLowerCase();
       if (TRAP_INSTRUCTIONS.has(lower)) {
-        html += `<span class="text-emerald-400 font-extrabold bg-emerald-950/60 px-1 py-0.5 rounded border border-emerald-800/80 shadow-sm">${escapeHtml(text)}</span>`;
+        html += `<span class="text-emerald-400 font-extrabold bg-emerald-950/60 px-1 py-0.5 rounded border border-emerald-800/80">${escapeHtml(text)}</span>`;
       } else if (STANDARD_MNEMONICS.has(lower)) {
         html += `<span class="text-sky-400 font-bold">${escapeHtml(text)}</span>`;
-      } else if (REGISTERS.has(lower)) {
-        html += `<span class="text-orange-300 font-medium">${escapeHtml(text)}</span>`;
       } else {
-        html += `<span class="text-zinc-200">${escapeHtml(text)}</span>`;
+        html += `<span class="text-orange-300">${escapeHtml(text)}</span>`;
       }
     } else {
       html += escapeHtml(text);
@@ -284,8 +119,16 @@ export default function AssemblyEditor({
   arch,
 }: AssemblyEditorProps) {
   const lines = code.split("\n");
+  const preRef = useRef<HTMLPreElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleScroll = (e: UIEvent<HTMLTextAreaElement>) => {
+    if (preRef.current) {
+      preRef.current.scrollLeft = e.currentTarget.scrollLeft;
+    }
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Tab") {
       e.preventDefault();
       const target = e.currentTarget;
@@ -297,6 +140,9 @@ export default function AssemblyEditor({
         target.selectionStart = target.selectionEnd = start + 4;
       });
     }
+    if (e.key === "Escape") {
+      e.currentTarget.blur();
+    }
   };
 
   return (
@@ -306,18 +152,18 @@ export default function AssemblyEditor({
           Source Program ({lines.length} lines)
         </span>
         <span className="font-sans text-[10px] text-zinc-500">
-          Auto-expanding &bull; Syntax Colorized
+          Auto-expanding &bull; Esc to release focus
         </span>
       </div>
 
-      <div className="relative flex">
-        {/* Line Numbers & Execution Pointer Gutter */}
-        <div className="select-none bg-zinc-900/40 text-zinc-600 dark:text-zinc-500 py-3 px-3 text-right border-r border-zinc-800/80 font-mono text-xs leading-6 space-y-0 min-w-[3.5rem]">
+      <div className="relative flex overflow-x-auto">
+        {/* Gutter */}
+        <div className="select-none bg-zinc-900/50 text-zinc-600 dark:text-zinc-500 py-3 px-3 text-right border-r border-zinc-800 font-mono text-xs leading-6 min-w-[3.2rem]">
           {lines.map((_, i) => {
             const isActive = i === activeLineIndex && !isHalted;
             return (
               <div
-                // biome-ignore lint/suspicious/noArrayIndexKey: line index is the stable line number position
+                // biome-ignore lint/suspicious/noArrayIndexKey: lines are fixed by index in gutter
                 key={i}
                 className="flex items-center justify-end gap-1.5 h-6"
               >
@@ -334,25 +180,25 @@ export default function AssemblyEditor({
           })}
         </div>
 
-        {/* Dual-Layer Colorized Editor (Non-Scrollable) */}
-        <div className="relative flex-1">
-          {/* Highlighted Visual Layer */}
+        {/* Code Canvas (Horizontal scroll enabled without soft-wrap drift) */}
+        <div className="relative flex-1 min-w-[480px]">
           <pre
+            ref={preRef}
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 py-3 px-4 m-0 font-mono text-xs leading-6 whitespace-pre overflow-hidden"
+            className="py-3 px-4 m-0 font-mono text-xs leading-6 whitespace-pre overflow-hidden block select-none pointer-events-none"
           >
             {lines.map((line, i) => {
               const isActive = i === activeLineIndex && !isHalted;
               return (
                 <div
-                  // biome-ignore lint/suspicious/noArrayIndexKey: line index defines the visual buffer row
+                  // biome-ignore lint/suspicious/noArrayIndexKey: line index specifies code row
                   key={i}
-                  className={`h-6 ${
+                  className={`h-6 transition-colors ${
                     isActive
-                      ? "bg-emerald-950/30 -mx-4 px-4 border-l-2 border-emerald-400"
+                      ? "bg-emerald-950/40 shadow-[inset_3px_0_0_0_#34d399]"
                       : ""
                   }`}
-                  // biome-ignore lint/security/noDangerouslySetInnerHtml: Tokenized assembly highlighter
+                  // biome-ignore lint/security/noDangerouslySetInnerHtml: Tokenized syntax highlighter
                   dangerouslySetInnerHTML={{
                     __html: highlightLine(line, arch),
                   }}
@@ -361,14 +207,16 @@ export default function AssemblyEditor({
             })}
           </pre>
 
-          {/* Transparent Input Layer */}
           <textarea
+            ref={textareaRef}
             value={code}
             onChange={(e) => onChange(e.target.value)}
+            onScroll={handleScroll}
             onKeyDown={handleKeyDown}
             spellCheck={false}
-            rows={Math.max(lines.length, 12)}
-            className="w-full h-full py-3 px-4 font-mono text-xs leading-6 bg-transparent text-transparent caret-emerald-400 selection:bg-emerald-500/30 resize-none outline-none overflow-hidden block"
+            wrap="off"
+            aria-label="Assembly source editor"
+            className="absolute inset-0 w-full h-full py-3 px-4 font-mono text-xs leading-6 whitespace-pre bg-transparent text-transparent caret-emerald-400 selection:bg-emerald-500/30 resize-none outline-none overflow-hidden block"
           />
         </div>
       </div>

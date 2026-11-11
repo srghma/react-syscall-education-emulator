@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { INSTRUCTIONS_DATA } from "@/lib/instruction-data";
+import { privilegeToString } from "@/lib/lean/domain";
 
 export default function InstructionTable() {
   const [archFilter, setArchFilter] = useState<string>("all");
@@ -11,16 +12,17 @@ export default function InstructionTable() {
 
   const filtered = INSTRUCTIONS_DATA.filter((item) => {
     const matchesArch = archFilter === "all" || item.arch === archFilter;
+    const sourcePrivStr = privilegeToString(item.sourcePrivilege).toLowerCase();
+    const targetPrivStr = privilegeToString(item.targetPrivilege).toLowerCase();
     const matchesSearch =
       item.mnemonic.toLowerCase().includes(search.toLowerCase()) ||
       item.fullName.toLowerCase().includes(search.toLowerCase()) ||
       item.archDisplay.toLowerCase().includes(search.toLowerCase()) ||
-      item.sourcePrivilege.toLowerCase().includes(search.toLowerCase()) ||
-      item.targetPrivilege.toLowerCase().includes(search.toLowerCase());
+      sourcePrivStr.includes(search.toLowerCase()) ||
+      targetPrivStr.includes(search.toLowerCase());
     return matchesArch && matchesSearch;
   });
 
-  // Chronological sort based on specification introduction year
   const sorted = [...filtered].sort((a, b) => {
     const diff = a.yearIntroduced - b.yearIntroduced;
     return sortOrder === "asc" ? diff : -diff;
@@ -119,11 +121,11 @@ export default function InstructionTable() {
                 <td className="py-3 px-4 font-sans">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900">
-                      {item.sourcePrivilege}
+                      {privilegeToString(item.sourcePrivilege)}
                     </span>
                     <span className="text-zinc-400 font-bold">&rarr;</span>
                     <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
-                      {item.targetPrivilege}
+                      {privilegeToString(item.targetPrivilege)}
                     </span>
                   </div>
                 </td>
